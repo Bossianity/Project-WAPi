@@ -281,7 +281,7 @@ def process_outreach_campaign(sheet_id, agent_sender_id, app_context):
             else:
                 # Use simple template if it exists, otherwise use hardcoded default
                 if not simple_template:
-                     simple_template = f"Hi {{ClientName}}, this is Layla from Your Business. Would you like to learn more about {{ServiceName}}? 😊"
+                     simple_template = f"Hi {{ClientName}}, this is Emran from X realtors. We just wanted to know if you are interested in buying, selling or renting any properties?"
                 
                 personalized_message = simple_template.format(**placeholders)
                 message_sent = send_whatsapp_message(row_info['data']['PhoneNumber'], personalized_message)
