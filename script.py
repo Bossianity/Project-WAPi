@@ -989,7 +989,6 @@ def handle_new_messages():
             if message.get('from_me'):
                 continue
 
-            # CORRECTED: Using 'from' field to get sender ID as per the guide
             sender = message.get('from')
             msg_type = message.get('type')
             
@@ -1026,7 +1025,7 @@ def handle_new_messages():
                 logging.warning(f"Webhook ignored: no sender or body. Message: {message}")
                 continue
 
-            # --- Bot Control Command Handling ---
+            # --- BOT COMMAND HANDLING LOGIC ---
             normalized_body = body.lower().strip()
             global is_globally_paused
 
@@ -1065,6 +1064,25 @@ def handle_new_messages():
                 else:
                     send_whatsapp_message(sender, "Invalid command format. Use: bot resume <target_user_id>")
                     logging.info(f"Invalid 'bot resume' command from {sender}: {normalized_body}")
+                continue
+
+            if normalized_body.startswith("bot start outreach"):
+                parts = normalized_body.split("bot start outreach", 1)
+                sheet_specifier = parts[1].strip() if len(parts) > 1 and parts[1].strip() else os.getenv('DEFAULT_OUTREACH_SHEET_ID')
+                
+                if not sheet_specifier:
+                    send_whatsapp_message(sender, "Error: No Google Sheet ID was provided or found in the default environment variable.")
+                    logging.warning(f"Outreach command by {sender} failed: no sheet specifier.")
+                    continue
+                
+                parsed_sheet_id = extract_sheet_id_from_url(sheet_specifier)
+                if not parsed_sheet_id:
+                    send_whatsapp_message(sender, f"Error: The provided Google Sheet specifier '{sheet_specifier}' is invalid.")
+                    continue
+                
+                send_whatsapp_message(sender, f"Outreach campaign started using Sheet ID: {parsed_sheet_id}. You will be notified upon completion.")
+                executor.submit(process_outreach_campaign, parsed_sheet_id, sender, current_app.app_context())
+                logging.info(f"Outreach campaign submitted to executor for {sender} with Sheet ID: {parsed_sheet_id}.")
                 continue
 
             # --- Check for Pause States ---
