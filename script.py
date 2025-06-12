@@ -912,9 +912,9 @@ def split_message(text, max_lines=2, max_chars=1000):
 
 # ─── Health Check Endpoint ─────────────────────────────────────────────────────
 @app.route('/')
-def health_check(): return "OK", 200
+def home():
+    return "WhatsApp Bot is running!"
 
-# Helper function to extract Google Sheet ID from URL or use if already an ID
 def extract_sheet_id_from_url(url_or_id: str) -> str:
     if not url_or_id:
         return None
@@ -937,301 +937,204 @@ def extract_sheet_id_from_url(url_or_id: str) -> str:
     # However, for outreach, we might want to be stricter. For now, returning it.
     return url_or_id
 
-
-# ─── Webhook endpoint ─────────────────────────────────────────────────────────
-@app.route('/webhook', methods=['POST'])
-def webhook():
+@app.route('/webhook-google-sync', methods=['POST'])
+def webhook_google_sync():
+    """
+    Webhook endpoint to receive notifications from Google Apps Scripts
+    when a Document or Sheet is modified.
+    It queues a background task to process the update.
+    """
     try:
-        data = request.json or {} 
+        data = request.get_json()
+        if not isinstance(data, dict) or 'documentId' not in data or 'secretToken' not in data:
+            logging.warning(f"/webhook-google-sync: Invalid payload received: {data}")
+            return jsonify(error='Invalid payload. Missing documentId or secretToken.'), 400
 
-        now_utc = datetime.now(pytz.utc)
-        now_dubai = now_utc.astimezone(DUBAI_TIMEZONE)
-        current_hour_dubai = now_dubai.hour
+        document_id = data.get('documentId')
+        received_token = data.get('secretToken')
 
-        is_operational = False
-        if OPERATIONAL_START_HOUR_DUBAI > OPERATIONAL_END_HOUR_DUBAI: 
-            if current_hour_dubai >= OPERATIONAL_START_HOUR_DUBAI or current_hour_dubai < OPERATIONAL_END_HOUR_DUBAI:
-                is_operational = True
-        else: 
-            if OPERATIONAL_START_HOUR_DUBAI <= current_hour_dubai < OPERATIONAL_END_HOUR_DUBAI:
-                is_operational = True
-        
-        # Operational hours check remains commented as per user's original script state
-        # if not is_operational:
-        #     # ... logging and return ...
+        expected_token = os.getenv('FLASK_SECRET_TOKEN')
 
-        if not isinstance(data, dict) or 'event' not in data or 'data' not in data:
-            logging.warning(f"Webhook received malformed data: {data}")
-            return jsonify(status='ignored: malformed data'), 400
-        if data.get('event') != 'messages.upsert':
-            logging.info(f"Webhook ignored event: {data.get('event')}")
-            return jsonify(status='ignored: not a message upsert event'), 200
-        
-        msg_data_outer = data.get('data', {})
-        messages_payload = msg_data_outer.get('messages') 
-        if not messages_payload: 
-            messages_payload = msg_data_outer
+        if not expected_token:
+            logging.error("/webhook-google-sync: FLASK_SECRET_TOKEN not configured on the server.")
+            # For security reasons, avoid giving too much detail to the client here.
+            return jsonify(error='Webhook service not configured correctly.'), 500
 
-        if not messages_payload or not isinstance(messages_payload, dict):
-            logging.warning(f"Webhook: 'messages' field missing, not a dict, or in unexpected location in data: {data.get('data')}")
-            return jsonify(status='ignored: no message data or malformed'), 200
+        if received_token != expected_token:
+            logging.warning(f"/webhook-google-sync: Unauthorized attempt. Received token: '{received_token}' for document: {document_id}")
+            return jsonify(error='Unauthorized.'), 403
 
-        if messages_payload.get('key', {}).get('fromMe'):
-            logging.info("Webhook ignored: message is from me.")
-            return jsonify(status='ignored: from me'), 200
-        
-        sender = messages_payload.get('key', {}).get('remoteJid')
-        message_content_dict = messages_payload.get('message', {})
-        
-        # Initialize variables for message processing
-        body = None
-        is_media = False
-        media_info = None
-        media_type = None # e.g., "audio", "image", "video"
+        # Authentication successful
+        logging.info(f"/webhook-google-sync: Authentication successful for document_id: {document_id}. Queuing background task.")
 
-        if message_content_dict:
-            if 'conversation' in message_content_dict:
-                body = message_content_dict['conversation']
-            elif 'extendedTextMessage' in message_content_dict:
-                body = message_content_dict['extendedTextMessage'].get('text')
+        # Get the current Flask app context to pass to the background thread
+        # This allows the background thread to use current_app, logging, etc.
+        current_app_context = current_app.app_context()
 
-            # Check for media messages
-            if 'audioMessage' in message_content_dict:
-                is_media = True
-                media_type = "audio"
-                media_info = message_content_dict['audioMessage']
-                logging.info(f"Received audio message from {sender}")
-            elif 'imageMessage' in message_content_dict:
-                is_media = True
-                media_type = "image"
-                media_info = message_content_dict['imageMessage']
-                # For images, Layla's RAG is expected to find an image and respond with [ACTION_SEND_IMAGE_VIA_URL]
-                # So, we might just set body to a placeholder indicating image received.
-                body = "[User sent an image. Analyzing context...]"
-                logging.info(f"Received image message from {sender}. Body set for RAG analysis.")
-            elif 'videoMessage' in message_content_dict:
-                is_media = True
-                media_type = "video"
-                media_info = message_content_dict['videoMessage']
-                # Similar to images, Layla might describe or react based on RAG context.
-                body = "[User sent a video. Analyzing context...]"
-                logging.info(f"Received video message from {sender}. Body set for RAG analysis.")
+        # Submit the task to the ThreadPoolExecutor
+        executor.submit(process_google_document_update, document_id, current_app_context)
 
-            if is_media and media_info:
-                media_url = media_info.get('url')
-                media_key_b64 = media_info.get('mediaKey')
+        return jsonify(status='success', message='Document update task queued.'), 202
 
-                if not media_url or not media_key_b64:
-                    logging.error(f"Media message from {sender} is missing URL or mediaKey. MediaInfo: {media_info}")
-                    body = "[Media processing error: Missing URL or key]"
+    except Exception as e:
+        logging.exception(f"Error in /webhook-google-sync: {e}")
+        return jsonify(error='Internal Server Error'), 500
+
+@app.route('/hook/messages', methods=['POST'])
+def handle_new_messages():
+    try:
+        # 1. Directly get the JSON data and look for the 'messages' list
+        data = request.json or {}
+        incoming_messages = data.get('messages', [])
+
+        # If there are no messages, we can exit early.
+        if not incoming_messages:
+            logging.info("Webhook received a request without a 'messages' list.")
+            return jsonify(status='success_no_messages'), 200
+
+        # 2. Loop through each message in the list
+        for message in incoming_messages:
+            if message.get('from_me'):
+                continue # Ignore messages sent by the bot itself
+
+            sender = message.get('chat_id')
+            msg_type = message.get('type')
+            
+            body = None
+            
+            if msg_type == 'text':
+                body = message.get('text', {}).get('body')
+            elif msg_type == 'image' or msg_type == 'video':
+                body = f"[User sent a {msg_type}]"
+                if message.get('media', {}).get('caption'):
+                    body += f" with caption: {message['media']['caption']}"
+                logging.info(f"Received {msg_type} message from {sender}. Body set for RAG analysis.")
+            elif msg_type == 'audio':
+                media_url = message.get('media', {}).get('url')
+                if media_url and openai_client:
+                    try:
+                        audio_response = requests.get(media_url)
+                        audio_response.raise_for_status()
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_audio_file:
+                            tmp_audio_file.write(audio_response.content)
+                            tmp_audio_file_path = tmp_audio_file.name
+                        
+                        transcript = openai_client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=open(tmp_audio_file_path, "rb")
+                        )
+                        body = transcript.text
+                        logging.info(f"Transcription result for {sender}: {body}")
+                        os.remove(tmp_audio_file_path)
+                    except Exception as e:
+                        logging.error(f"Error during audio transcription for {sender}: {e}")
+                        body = "[Audio transcription failed.]"
                 else:
-                    if media_type in ["audio", "image", "video"]: # Ensure media_type is one of these before decryption
-                        try:
-                            logging.info(f"Attempting to download and decrypt {media_type} from {sender}. URL: {media_url[:50]}...")
-                            decrypted_media_content = download_and_decrypt_media(media_url, media_key_b64, media_type)
+                    body = "[Audio received, but could not be transcribed.]"
 
-                            if decrypted_media_content:
-                                logging.info(f"Successfully decrypted {media_type} from {sender}. Size: {len(decrypted_media_content)} bytes.")
-                                if media_type == "audio":
-                                    if openai_client:
-                                        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_audio_file:
-                                            tmp_audio_file.write(decrypted_media_content)
-                                            tmp_audio_file_path = tmp_audio_file.name
+            if not (sender and body):
+                logging.warning(f"Webhook ignored: no sender or body. Message: {message}")
+                continue
 
-                                        try:
-                                            logging.info(f"Transcribing audio file: {tmp_audio_file_path}")
-                                            transcript = openai_client.audio.transcriptions.create(
-                                                model="whisper-1",
-                                                file=open(tmp_audio_file_path, "rb")
-                                            )
-                                            body = transcript.text
-                                            logging.info(f"Transcription result for {sender}: {body}")
-                                        except Exception as e_transcribe:
-                                            logging.error(f"Whisper API transcription failed for {sender}: {e_transcribe}", exc_info=True)
-                                            body = "[Audio transcription failed. Please try again or type your message.]"
-                                        finally:
-                                            if os.path.exists(tmp_audio_file_path):
-                                                os.remove(tmp_audio_file_path)
-                                    else:
-                                        logging.warning("OpenAI client not initialized. Cannot transcribe audio.")
-                                        body = "[Audio received, but transcription service is unavailable.]"
-                                # For image/video, body is already set to a placeholder for RAG.
-                                # If specific decrypted content handling for image/video (not RAG based) is needed, add here.
-                            else:
-                                logging.error(f"Failed to decrypt {media_type} from {sender}.")
-                                body = f"[{media_type.capitalize()} decryption failed. Please try sending again.]"
-                        except ValueError as ve: # Catch errors from get_decryption_keys for unsupported media types
-                            logging.error(f"Media handling error for {sender} ({media_type}): {ve}")
-                            body = f"[Unsupported media type for decryption: {media_type}]"
-                        except Exception as e_decrypt:
-                            logging.error(f"General error during media download/decryption for {sender} ({media_type}): {e_decrypt}", exc_info=True)
-                            body = f"[{media_type.capitalize()} processing failed. Please try sending again.]"
-                    else:
-                        # This case should ideally not be reached if media_type is set correctly above.
-                        logging.warning(f"Media message from {sender} has an unexpected media_type '{media_type}'. MediaInfo: {media_info}")
-                        body = "[Received media of an unexpected type.]"
-            # If 'body' is still None here (e.g. it was not a text message and not a recognized media message),
-            # the check below `if not (sender and body)` will catch it.
+            # --- Bot Control Command Handling ---
+            normalized_body = body.lower().strip()
+            global is_globally_paused
 
-        if not (sender and body):
-            # This log now correctly reflects that 'body' might be None due to various reasons,
-            # including unrecognized message types or errors in media processing.
-            logging.warning(f"Webhook ignored: no sender or body could be processed. Sender: {sender}, Body: {body}, Initial Message Content Dict: {message_content_dict if message_content_dict else 'N/A'}")
-            return jsonify(status='ignored: no sender or final body content'), 200
+            if normalized_body == "bot pause all":
+                is_globally_paused = True
+                send_whatsapp_message(sender, "Bot is now globally paused.")
+                logging.info(f"Bot globally paused by {sender}.")
+                continue
 
-        # --- Bot Control Command Handling ---
-        normalized_body = body.lower().strip()
-        global is_globally_paused # Needed for reassignment
+            if normalized_body == "bot resume all":
+                is_globally_paused = False
+                paused_conversations.clear()
+                send_whatsapp_message(sender, "Bot is now globally resumed. All specific conversation pauses have been cleared.")
+                logging.info(f"Bot globally resumed by {sender}. Specific pauses cleared.")
+                continue
 
-        if normalized_body == "bot pause all":
-            is_globally_paused = True
-            send_whatsapp_message(sender, "Bot is now globally paused.")
-            logging.info(f"Bot globally paused by {sender}.")
-            return jsonify(status='success_paused_all'), 200
+            if normalized_body.startswith("bot pause "):
+                parts = normalized_body.split("bot pause ", 1)
+                if len(parts) > 1 and parts[1].strip():
+                    target_user_id = parts[1].strip()
+                    paused_conversations.add(target_user_id)
+                    send_whatsapp_message(sender, f"Bot interactions will be paused for: {target_user_id}")
+                    logging.info(f"Bot interactions paused for {target_user_id} by {sender}.")
+                else:
+                    send_whatsapp_message(sender, "Invalid command format. Use: bot pause <target_user_id>")
+                    logging.info(f"Invalid 'bot pause' command from {sender}: {normalized_body}")
+                continue
 
-        if normalized_body == "bot resume all":
-            is_globally_paused = False
-            paused_conversations.clear()
-            send_whatsapp_message(sender, "Bot is now globally resumed. All specific conversation pauses have been cleared.")
-            logging.info(f"Bot globally resumed by {sender}. Specific pauses cleared.")
-            return jsonify(status='success_resumed_all'), 200
+            if normalized_body.startswith("bot resume "):
+                parts = normalized_body.split("bot resume ", 1)
+                if len(parts) > 1 and parts[1].strip():
+                    target_user_id = parts[1].strip()
+                    paused_conversations.discard(target_user_id)
+                    send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}")
+                    logging.info(f"Bot interactions resumed for {target_user_id} by {sender}.")
+                else:
+                    send_whatsapp_message(sender, "Invalid command format. Use: bot resume <target_user_id>")
+                    logging.info(f"Invalid 'bot resume' command from {sender}: {normalized_body}")
+                continue
 
-        if normalized_body.startswith("bot pause "):
-            parts = normalized_body.split("bot pause ", 1)
-            if len(parts) > 1 and parts[1].strip():
-                target_user_id = parts[1].strip()
-                # Ensure target_user_id is normalized if it's expected to match sender format (e.g. with @s.whatsapp.net)
-                # For now, assuming it's a direct match or an admin will provide the correct format.
-                paused_conversations.add(target_user_id)
-                send_whatsapp_message(sender, f"Bot interactions will be paused for: {target_user_id}")
-                logging.info(f"Bot interactions paused for {target_user_id} by {sender}.")
-            else:
-                send_whatsapp_message(sender, "Invalid command format. Use: bot pause <target_user_id>")
-                logging.info(f"Invalid 'bot pause' command from {sender}: {normalized_body}")
-            return jsonify(status='success_paused_specific_or_error'), 200
+            # --- Check for Pause States ---
+            if is_globally_paused:
+                logging.info(f"Bot is globally paused. Ignoring message from {sender}: {body[:100]}...")
+                continue
 
-        if normalized_body.startswith("bot resume "):
-            parts = normalized_body.split("bot resume ", 1)
-            if len(parts) > 1 and parts[1].strip():
-                target_user_id = parts[1].strip()
-                paused_conversations.discard(target_user_id) # Use discard to avoid error if ID not in set
-                send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}")
-                logging.info(f"Bot interactions resumed for {target_user_id} by {sender}.")
-            else:
-                send_whatsapp_message(sender, "Invalid command format. Use: bot resume <target_user_id>")
-                logging.info(f"Invalid 'bot resume' command from {sender}: {normalized_body}")
-            return jsonify(status='success_resumed_specific_or_error'), 200
+            if sender in paused_conversations:
+                logging.info(f"Conversation with {sender} is paused. Ignoring message: {body[:100]}...")
+                continue
 
-        # --- End of Bot Control Command Handling ---
-
-        # --- Outreach Command Handling (NEW) ---
-        is_outreach_command = False
-        original_sheet_specifier = None # Will store the raw input (URL or ID from command/env)
-
-        if normalized_body == "bot start outreach":
-            original_sheet_specifier = os.getenv('DEFAULT_OUTREACH_SHEET_ID')
-            is_outreach_command = True
-            logging.info(f"Outreach command detected. Attempting to use default Sheet specifier: '{original_sheet_specifier}' (if set).")
-        elif normalized_body.startswith("bot start outreach "):
-            parts = normalized_body.split("bot start outreach ", 1)
-            original_sheet_specifier = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
-            is_outreach_command = True
-            if not original_sheet_specifier: # Command was "bot start outreach " (with trailing space but no ID)
-                original_sheet_specifier = os.getenv('DEFAULT_OUTREACH_SHEET_ID')
-                logging.info(f"Outreach command with trailing space detected. Attempting to use default Sheet specifier: '{original_sheet_specifier}' (if set).")
-            else:
-                logging.info(f"Outreach command detected with specific Sheet specifier: '{original_sheet_specifier}'")
-
-        if is_outreach_command:
-            parsed_sheet_id = extract_sheet_id_from_url(original_sheet_specifier)
-
-            if not parsed_sheet_id:
-                error_msg = (
-                    f"Error: No Google Sheet ID or URL was provided, or the provided one ('{original_sheet_specifier}') is invalid. "
-                    "Please specify a valid Google Sheet ID or URL, or ensure DEFAULT_OUTREACH_SHEET_ID is correctly set."
-                )
-                send_whatsapp_message(sender, error_msg)
-                logging.warning(f"Outreach command failed for {sender}: Invalid or missing Sheet specifier ('{original_sheet_specifier}').")
-                return jsonify(status='error_invalid_sheet_specifier'), 200
-
-            agent_sender_id = sender
-            # Use parsed_sheet_id in user-facing messages and for processing
-            send_whatsapp_message(agent_sender_id, f"Outreach campaign started using Sheet ID: {parsed_sheet_id}. You will be notified upon completion.")
-
-            current_app_context = current_app.app_context()
-            try:
-                executor.submit(process_outreach_campaign, parsed_sheet_id, agent_sender_id, current_app_context)
-                logging.info(f"Outreach campaign initiated by {agent_sender_id} for Sheet ID: {parsed_sheet_id} (Original specifier: '{original_sheet_specifier}').")
-                return jsonify(status='outreach_campaign_started'), 200
-            except Exception as e_executor:
-                logging.error(f"Failed to submit outreach campaign to executor for Sheet ID {parsed_sheet_id} (Original specifier: '{original_sheet_specifier}'). Error: {e_executor}", exc_info=True)
-                send_whatsapp_message(agent_sender_id, "Error: Could not start the outreach campaign due to an internal issue.")
-                return jsonify(status='error_starting_outreach_task'), 500
-        # --- End of Outreach Command Handling ---
-
-        # --- Check for Pause States (Global or Specific Conversation) ---
-        if is_globally_paused:
-            logging.info(f"Bot is globally paused. Ignoring message from {sender}: {body[:100]}...") # Log a snippet of body
-            return jsonify(status='ignored_globally_paused'), 200
-
-        # Ensure 'sender' is used for checking against 'paused_conversations'
-        # 'sender' typically is in the format 'xxxxxxxxxxx@s.whatsapp.net'
-        # 'target_user_id' when added to paused_conversations should match this format or be adapted.
-        # For now, assuming 'sender' is the correct key format for the set.
-        if sender in paused_conversations:
-            logging.info(f"Conversation with {sender} is paused. Ignoring message: {body[:100]}...") # Log a snippet of body
-            return jsonify(status='ignored_specifically_paused'), 200
-
-        # --- End of Pause State Checks ---
+            # --- Process message with AI/RAG ---
+            user_id = ''.join(c for c in sender if c.isalnum()) 
+            logging.info(f"Incoming from {sender} (UID: {user_id}): {body}")
             
-        user_id = ''.join(c for c in sender if c.isalnum()) 
-        logging.info(f"Incoming from {sender} (UID: {user_id}): {body}")
-        
-        history = load_history(user_id)
-        llm_response_data = get_llm_response(body, sender, history)
-        
-        final_model_response_for_history = ""
+            history = load_history(user_id)
+            llm_response_data = get_llm_response(body, sender, history)
+            
+            final_model_response_for_history = ""
 
-        if llm_response_data['type'] == 'image':
-            image_url = llm_response_data['url']
-            caption = llm_response_data['caption']
-            logging.info(f"Attempting to send image to {sender}. URL: {image_url}, Caption: {caption}")
-            success = send_whatsapp_image_message(sender, caption, image_url)
-            if success:
-                final_model_response_for_history = f"[Sent Image: {image_url} with caption: {caption}]"
-                logging.info(f"Successfully sent image to {sender}.")
+            if llm_response_data['type'] == 'image':
+                image_url = llm_response_data['url']
+                caption = llm_response_data['caption']
+                logging.info(f"Attempting to send image to {sender}. URL: {image_url}, Caption: {caption}")
+                success = send_whatsapp_image_message(sender, caption, image_url)
+                if success:
+                    final_model_response_for_history = f"[Sent Image: {image_url} with caption: {caption}]"
+                    logging.info(f"Successfully sent image to {sender}.")
+                else:
+                    final_model_response_for_history = f"[Failed to send Image: {image_url} with caption: {caption}]"
+                    logging.error(f"Failed to send image to {sender}. URL: {image_url}")
+                    fallback_message = "I tried to send you an image, but it seems there was a problem. Please try again later or ask me something else!"
+                    send_whatsapp_message(sender, fallback_message)
+            elif llm_response_data['type'] == 'text':
+                text_content = llm_response_data['content']
+                final_model_response_for_history = text_content
+                chunks = split_message(text_content)
+                for idx, chunk in enumerate(chunks, start=1):
+                    if not send_whatsapp_message(sender, chunk):
+                        logging.error(f"Failed to send chunk {idx}/{len(chunks)} to {sender}. Aborting further sends for this message.")
+                        break 
+                    if idx < len(chunks): 
+                        time.sleep(random.uniform(2.0, 3.0))
             else:
-                final_model_response_for_history = f"[Failed to send Image: {image_url} with caption: {caption}]"
-                logging.error(f"Failed to send image to {sender}. URL: {image_url}")
-                fallback_message = "I tried to send you an image, but it seems there was a problem. Please try again later or ask me something else!"
-                send_whatsapp_message(sender, fallback_message)
-        elif llm_response_data['type'] == 'text':
-            text_content = llm_response_data['content']
-            final_model_response_for_history = text_content
-            chunks = split_message(text_content)
-            for idx, chunk in enumerate(chunks, start=1):
-                if not send_whatsapp_message(sender, chunk):
-                    logging.error(f"Failed to send chunk {idx}/{len(chunks)} to {sender}. Aborting further sends for this message.")
-                    break 
-                if idx < len(chunks): 
-                    # MODIFICATION: Increased delay to help prevent messages from arriving out of order.
-                    time.sleep(random.uniform(2.0, 3.0))
-        else:
-            logging.error(f"Unknown response type from get_llm_response: {llm_response_data.get('type')}")
-            final_model_response_for_history = "[Error: Unknown response type from LLM]"
-            error_message = "I'm having a bit of trouble processing that request. Could you try rephrasing?"
-            send_whatsapp_message(sender, error_message)
+                logging.error(f"Unknown response type from get_llm_response: {llm_response_data.get('type')}")
+                final_model_response_for_history = "[Error: Unknown response type from LLM]"
+                error_message = "I'm having a bit of trouble processing that request. Could you try rephrasing?"
+                send_whatsapp_message(sender, error_message)
+                
+            new_history_user = {'role': 'user', 'parts': [body]}
+            new_history_model = {'role': 'model', 'parts': [final_model_response_for_history]}
+            history.append(new_history_user)
+            history.append(new_history_model)
             
-        new_history_user = {'role': 'user', 'parts': [body]}
-        new_history_model = {'role': 'model', 'parts': [final_model_response_for_history]}
-        history.append(new_history_user)
-        history.append(new_history_model)
+            MAX_HISTORY_TURNS = 10 
+            if len(history) > MAX_HISTORY_TURNS * 2:
+                history = history[-(MAX_HISTORY_TURNS * 2):] 
+                
+            save_history(user_id, history)
         
-        MAX_HISTORY_TURNS = 10 
-        if len(history) > MAX_HISTORY_TURNS * 2:
-            history = history[-(MAX_HISTORY_TURNS * 2):] 
-            
-        save_history(user_id, history)
         return jsonify(status='success'), 200
 
     except json.JSONDecodeError as je:
@@ -1294,111 +1197,6 @@ def process_google_document_update(document_id, app_context):
 
         except Exception as e:
             logging.error(f"Unexpected error in background task for document_id {document_id}: {e}", exc_info=True)
-
-# ─── Webhook Endpoint for Google Document/Sheet Synchronization ────────────────
-@app.route('/webhook-google-sync', methods=['POST'])
-def webhook_google_sync():
-    """
-    Webhook endpoint to receive notifications from Google Apps Scripts
-    when a Document or Sheet is modified.
-    It queues a background task to process the update.
-    """
-    try:
-        data = request.get_json()
-        if not isinstance(data, dict) or 'documentId' not in data or 'secretToken' not in data:
-            logging.warning(f"/webhook-google-sync: Invalid payload received: {data}")
-            return jsonify(error='Invalid payload. Missing documentId or secretToken.'), 400
-
-        document_id = data.get('documentId')
-        received_token = data.get('secretToken')
-
-        expected_token = os.getenv('FLASK_SECRET_TOKEN')
-
-        if not expected_token:
-            logging.error("/webhook-google-sync: FLASK_SECRET_TOKEN not configured on the server.")
-            # For security reasons, avoid giving too much detail to the client here.
-            return jsonify(error='Webhook service not configured correctly.'), 500
-
-        if received_token != expected_token:
-            logging.warning(f"/webhook-google-sync: Unauthorized attempt. Received token: '{received_token}' for document: {document_id}")
-            return jsonify(error='Unauthorized.'), 403
-
-        # Authentication successful
-        logging.info(f"/webhook-google-sync: Authentication successful for document_id: {document_id}. Queuing background task.")
-
-        # Get the current Flask app context to pass to the background thread
-        # This allows the background thread to use current_app, logging, etc.
-        current_app_context = current_app.app_context()
-
-        # Submit the task to the ThreadPoolExecutor
-        executor.submit(process_google_document_update, document_id, current_app_context)
-
-        return jsonify(status='success', message='Document update task queued.'), 202
-
-    except Exception as e:
-        logging.exception(f"Error in /webhook-google-sync: {e}")
-        return jsonify(error='Internal Server Error'), 500
-
-@app.route('/hook/messages', methods=['POST'])
-def handle_new_messages():
-    """Handle incoming WhatsApp messages from Whapi.Cloud."""
-    try:
-        data = request.json or {}
-        incoming_messages = data.get('messages', [])
-
-        for message in incoming_messages:
-            if message.get('from_me'):
-                continue
-
-            sender = message.get('chat_id')  # This is the full JID (e.g., ...@s.whatsapp.net)
-            msg_type = message.get('type')
-            body = None
-
-            if msg_type == 'text':
-                body = message.get('text', {}).get('body')
-            elif msg_type == 'audio':
-                media_url = message.get('media', {}).get('url')
-                # Download and transcribe audio using Whisper
-                if media_url:
-                    try:
-                        audio_response = requests.get(media_url, stream=True, timeout=20)
-                        audio_response.raise_for_status()
-                        
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
-                            tmp_file.write(audio_response.content)
-                            tmp_file_path = tmp_file.name
-                        
-                        try:
-                            with open(tmp_file_path, "rb") as audio_file:
-                                transcript = openai_client.audio.transcriptions.create(
-                                    model="whisper-1",
-                                    file=audio_file
-                                )
-                            body = transcript.text
-                        finally:
-                            os.remove(tmp_file_path)
-                    except Exception as e:
-                        logging.error(f"Error processing audio message: {e}")
-                        body = "[Error processing audio message]"
-            elif msg_type in ['image', 'video']:
-                body = f"[User sent a {msg_type}]"
-                if message.get('media', {}).get('caption'):
-                    body += f" with caption: {message['media']['caption']}"
-
-            if body:
-                # Process the message using existing logic
-                response = get_llm_response(body, sender)
-                if response:
-                    # Split long messages if needed
-                    messages = split_message(response)
-                    for msg in messages:
-                        send_whatsapp_message(sender, msg)
-
-        return jsonify({"status": "success"}), 200
-
-    except Exception as e:
-        logging.error(f"Error in handle_new_messages: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
     # Set up webhook on startup
