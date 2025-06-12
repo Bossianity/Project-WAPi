@@ -673,55 +673,63 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
         intent = "general_question"
         filters = None
 
-    # --- Step 2: Execute Logic Based on Intent ---
+    # --- Step 2: REVISED Logic Execution Based on Intent and Keywords ---
     context_str = ""
-    if intent == "property_search" and PROPERTY_SHEET_ID:
-        # --- Structured Property Search Logic ---
+    # The main condition is now broader to catch all property-related queries.
+    if (intent == "property_search" or is_property_related_query(text)) and PROPERTY_SHEET_ID:
+        
+        logging.info("Performing property database search (Google Sheets).")
         all_properties_df = property_handler.get_sheet_data()
+        
         if not all_properties_df.empty:
-            filtered_df = property_handler.filter_properties(all_properties_df, filters)
+            # If specific filters were found by the AI, use them.
+            if filters:
+                logging.info(f"Applying specific filters: {filters}")
+                filtered_df = property_handler.filter_properties(all_properties_df, filters)
+            # Otherwise, use the whole dataframe for a general listing.
+            else:
+                logging.info("No specific filters found; preparing a general list of properties.")
+                filtered_df = all_properties_df
 
             if not filtered_df.empty:
                 context_str = "Relevant Information Found:\n"
+                # Show top 5 results, whether from a filtered search or a general list.
                 for _, prop in filtered_df.head(5).iterrows():
                     prop_details = (
-                        f"Title: {prop['Title']}\n"
-                        f"Location: {prop['area']}, {prop['city']}, {prop['emirate']}\n"
-                        f"Price: {prop['Price_AED']} AED\n"
-                        f"Bedrooms: {prop['Bedrooms']}\n"
-                        f"Description: {prop['Description']}\n"
+                        f"Title: {prop.get('Title', 'N/A')}\n"
+                        f"Location: {prop.get('area', '')}, {prop.get('city', '')}, {prop.get('emirate', '')}\n"
+                        f"Price: {prop.get('Price_AED', 'N/A')} AED\n"
+                        f"Bedrooms: {prop.get('Bedrooms', 'N/A')}\n"
+                        f"Description: {prop.get('Description', 'No description available.')}\n"
                     )
                     context_str += prop_details
+                    # Add images if available
                     for img_col in ['img1', 'img2', 'img3']:
-                        if prop[img_col] and isinstance(prop[img_col], str) and prop[img_col].startswith('http'):
-                            context_str += f"[ACTION_SEND_IMAGE_VIA_URL]\n{prop[img_col]}\n{prop['Title']}\n"
+                        img_url = prop.get(img_col)
+                        if img_url and isinstance(img_url, str) and img_url.startswith('http'):
+                            context_str += f"[ACTION_SEND_IMAGE_VIA_URL]\n{img_url}\n{prop.get('Title', 'Property Image')}\n"
                     context_str += "---\n"
             else:
-                context_str = "Relevant Information Found:\nNo properties found matching your specific criteria. I can search again if you adjust your filters."
+                context_str = "Relevant Information Found:\nNo properties found matching your criteria. Please try different keywords or filters."
         else:
-             context_str = "Relevant Information Found:\nI was unable to access the property listings. Please try again shortly."
+             context_str = "Relevant Information Found:\nI was unable to access the property listings at this moment. Please try again shortly."
 
     else:
-        # --- Fallback to General RAG (Vector Search) Logic ---
-        logging.info("Performing general RAG query using vector store.")
-    if 'current_app' in globals() and current_app: 
-        vector_store = current_app.config.get('VECTOR_STORE')
-    else: 
-        vector_store = vector_store_rag
-
+        # This 'else' block now correctly handles only TRULY general, non-property questions.
+        logging.info("Performing general RAG query using vector store for a non-property question.")
+        vector_store = current_app.config.get('VECTOR_STORE') or vector_store_rag
         if vector_store:
             retrieved_docs = query_vector_store(text, vector_store, k=5)
             if retrieved_docs:
                 processed_docs_content = [re.sub(r'\*+\s*(.*?)\s*\*+', r'\1', doc.page_content) for doc in retrieved_docs]
                 context_str = "\n\nRelevant Information Found:\n" + "\n".join(processed_docs_content)
             else:
-                logging.info("No relevant context found in vector store for general query.")
+                logging.info("No relevant context found in vector store for the general query.")
         else:
             logging.warning("Vector store not available for general query.")
 
     # --- Step 3: Generate Final Response Based on Context ---
     final_prompt_to_llm = context_str + f"\n\nUser Question: {text}" if context_str else text
-
     messages = [SystemMessage(content=BASE_PROMPT)]
     if history_dicts:
         for item in history_dicts:
@@ -731,7 +739,6 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
                 content = parts[0] 
                 if role == 'user': messages.append(HumanMessage(content=content))
                 elif role in ['model', 'assistant']: messages.append(AIMessage(content=content))
-    
     messages.append(HumanMessage(content=final_prompt_to_llm))
     
     for attempt in range(retries):
@@ -740,36 +747,25 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
             resp = AI_MODEL.invoke(messages)
             raw_llm_output = resp.content.strip()
 
-            final_response_data = {'type': 'text', 'content': raw_llm_output} # Default to text
-
-            # Check for image action and try to parse
             if "[ACTION_SEND_IMAGE_VIA_URL]" in raw_llm_output:
                 image_parts = []
                 for line in raw_llm_output.splitlines():
-                    # Collect image related lines only if they are formatted as expected
                     if line.strip() == "[ACTION_SEND_IMAGE_VIA_URL]" or (image_parts and len(image_parts) < 3):
                         image_parts.append(line)
-                
                 if len(image_parts) >= 3:
                     image_url = image_parts[1].strip()
                     image_caption = image_parts[2].strip()
-                    if image_url.startswith('http'): # Basic validation for URL
-                        final_response_data = {'type': 'image', 'url': image_url, 'caption': image_caption}
-                        # If an image is successfully parsed, we can return it immediately
-                        return final_response_data
+                    if image_url.startswith('http'):
+                        return {'type': 'image', 'url': image_url, 'caption': image_caption}
             
-            # If we reach here, it means either no image action was detected or it was malformed.
-            # Now process the raw_llm_output for text, stripping all action tokens.
-            response_text_for_display = raw_llm_output.replace("[ACTION_NOTIFY_UNANSWERED_QUERY]", "").replace("[ACTION_SEND_EMAIL_CONFIRMATION]", "").strip()
-            response_text_for_display = response_text_for_display.replace("[ACTION_SEND_IMAGE_VIA_URL]", "").strip() # Ensure image token is also removed from text output
-            
-            # If after stripping, there's still meaningful text, return it as a text message
+            response_text_for_display = re.sub(r'\[ACTION_SEND_IMAGE_VIA_URL\]\n.*\n.*', '', raw_llm_output).strip()
+            response_text_for_display = response_text_for_display.replace("[ACTION_NOTIFY_UNANSWERED_QUERY]", "").replace("[ACTION_SEND_EMAIL_CONFIRMATION]", "").strip()
+
             if response_text_for_display: 
                 return {'type': 'text', 'content': response_text_for_display}
 
-            # If nothing was returned (neither image nor text), log a warning
-            logging.warning(f"LLM returned an empty or token-only response on attempt {attempt+1}")
-        
+            logging.warning(f"LLM returned an empty or token-only response on attempt {attempt+1}. Raw output: {raw_llm_output}")
+
         except Exception as e:
             logging.warning(f"LLM API error on attempt {attempt+1}/{retries}: {e}")
             if attempt + 1 == retries:
@@ -1191,6 +1187,15 @@ def process_google_document_update(document_id, app_context):
 
         except Exception as e:
             logging.error(f"Unexpected error in background task for document_id {document_id}: {e}", exc_info=True)
+
+def is_property_related_query(text):
+    """Checks if a query is generally about properties using keywords."""
+    keywords = [
+        'property', 'properties', 'apartment', 'villa', 'house', 
+        'buy', 'rent', 'lease', 'listing', 'listings', 'available', 'real estate'
+    ]
+    text_lower = text.lower()
+    return any(keyword in text_lower for keyword in keywords)
 
 if __name__ == '__main__':
     # Set up webhook on startup
