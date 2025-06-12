@@ -14,7 +14,6 @@ from concurrent.futures import ThreadPoolExecutor
 import re
 import tempfile
 from openai import OpenAI
-from media_handler import download_and_decrypt_media
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 import pytz
@@ -29,15 +28,15 @@ from rag_handler import (
     query_vector_store,
     get_processed_files_log,
     remove_document_from_store,
-    process_google_document_text # Added for Google Drive document processing
+    process_google_document_text
 )
-from google_drive_handler import ( # Added for Google Drive document processing
+from google_drive_handler import (
     get_google_drive_file_mime_type,
     get_google_doc_content,
     get_google_sheet_content
 )
-from outreach_handler import process_outreach_campaign # For outreach feature
-from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message # For sending WhatsApp messages
+from outreach_handler import process_outreach_campaign
+from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, set_webhook
 
 # ─── Data Ingestion Configuration ──────────────────────────────────────────────
 COMPANY_DATA_FOLDER = 'company_data'
@@ -61,10 +60,8 @@ DUBAI_TIMEZONE = pytz.timezone('Asia/Dubai') # This is the same as TARGET_DISPLA
 
 # ─── Load environment and configure AI ─────────────────────────────────────────
 load_dotenv()
-OPENAI_API_KEY      = os.getenv('OPENAI_API_KEY')
-WASENDER_API_TOKEN  = os.getenv('WASENDER_API_TOKEN')
-WASENDER_API_URL    = "https://www.wasenderapi.com/api/send-message"
-PROPERTY_SHEET_ID   = os.getenv('PROPERTY_SHEET_ID')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+PROPERTY_SHEET_ID = os.getenv('PROPERTY_SHEET_ID')
 PROPERTY_SHEET_NAME = os.getenv('PROPERTY_SHEET_NAME', 'Properties')
 
 # --- Global Pause Feature ---
@@ -73,8 +70,7 @@ is_globally_paused = False
 paused_conversations = set()
 
 # ─── Persona loading ───────────────────────────────────────────────────────────
-PERSONA_FILE    = 'persona.json'
-
+PERSONA_FILE = 'persona.json'
 PERSONA_NAME = "Emran"
 
 BASE_PROMPT = (
@@ -1343,28 +1339,71 @@ def webhook_google_sync():
         logging.exception(f"Error in /webhook-google-sync: {e}")
         return jsonify(error='Internal Server Error'), 500
 
+@app.route('/hook/messages', methods=['POST'])
+def handle_new_messages():
+    """Handle incoming WhatsApp messages from Whapi.Cloud."""
+    try:
+        data = request.json or {}
+        incoming_messages = data.get('messages', [])
+
+        for message in incoming_messages:
+            if message.get('from_me'):
+                continue
+
+            sender = message.get('chat_id')  # This is the full JID (e.g., ...@s.whatsapp.net)
+            msg_type = message.get('type')
+            body = None
+
+            if msg_type == 'text':
+                body = message.get('text', {}).get('body')
+            elif msg_type == 'audio':
+                media_url = message.get('media', {}).get('url')
+                # Download and transcribe audio using Whisper
+                if media_url:
+                    try:
+                        audio_response = requests.get(media_url, stream=True, timeout=20)
+                        audio_response.raise_for_status()
+                        
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
+                            tmp_file.write(audio_response.content)
+                            tmp_file_path = tmp_file.name
+                        
+                        try:
+                            with open(tmp_file_path, "rb") as audio_file:
+                                transcript = openai_client.audio.transcriptions.create(
+                                    model="whisper-1",
+                                    file=audio_file
+                                )
+                            body = transcript.text
+                        finally:
+                            os.remove(tmp_file_path)
+                    except Exception as e:
+                        logging.error(f"Error processing audio message: {e}")
+                        body = "[Error processing audio message]"
+            elif msg_type in ['image', 'video']:
+                body = f"[User sent a {msg_type}]"
+                if message.get('media', {}).get('caption'):
+                    body += f" with caption: {message['media']['caption']}"
+
+            if body:
+                # Process the message using existing logic
+                response = get_llm_response(body, sender)
+                if response:
+                    # Split long messages if needed
+                    messages = split_message(response)
+                    for msg in messages:
+                        send_whatsapp_message(sender, msg)
+
+        return jsonify({"status": "success"}), 200
+
+    except Exception as e:
+        logging.error(f"Error in handle_new_messages: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
-    # Ensure RAG components are available in app.config if initialized globally
-    # This helps if the app is run directly (python script.py) vs gunicorn
-    # For gunicorn, initialization before app creation is usually fine.
-    if not app.config.get('VECTOR_STORE') and 'vector_store_rag' in globals() and vector_store_rag:
-        app.config['VECTOR_STORE'] = vector_store_rag
-    if not app.config.get('EMBEDDINGS') and 'embeddings_rag' in globals() and embeddings_rag:
-        app.config['EMBEDDINGS'] = embeddings_rag
-        
-    port = int(os.environ.get("PORT", 5001)) # Default to 5001 if not set
-    # debug=False is appropriate for production/staging with gunicorn
-    # For local testing, you might set debug=True, but be mindful of executor behavior with Flask's reloader.
-    app.run(host='0.0.0.0', port=port, debug=False)
-
-    # Note on ThreadPoolExecutor shutdown:
-    # For a production deployment with Gunicorn, Gunicorn manages worker processes.
-    # When Gunicorn stops, it will typically terminate the Python processes, which
-    # should lead to the ThreadPoolExecutor being cleaned up.
-    # Explicitly calling executor.shutdown(wait=True) here would only run if
-    # `app.run()` completes, which it normally doesn't until the server is stopped.
-    # If running this script standalone and expecting it to exit cleanly after some
-    # condition (not typical for a web server), then `executor.shutdown()` would be
-    # more relevant to place, perhaps in a try/finally block around `app.run()`.
-    # For now, relying on Gunicorn's process management is sufficient.
+    # Set up webhook on startup
+    set_webhook()
+    
+    # Start the Flask app
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)

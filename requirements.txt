@@ -14,9 +14,9 @@ python-dateutil
 python-dotenv
 pytz
 requests
+requests-toolbelt
 tiktoken
 waitress
-cryptography
 pandas
 gspread
 oauth2client
