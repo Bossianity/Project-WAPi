@@ -994,7 +994,21 @@ def handle_new_messages():
             
             body = None
             
-            if msg_type == 'text':
+            # --- NEW: Logic to handle button clicks ---
+            if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply':
+                button_reply = message['reply']['buttons_reply']
+                button_id = button_reply.get('id')
+                button_title = button_reply.get('title')
+                
+                # Set the body to the button title for conversation history
+                body = button_title
+                
+                logging.info(f"User {sender} clicked button: ID='{button_id}', Title='{button_title}'")
+                # You can add specific logic here based on the button_id
+                # For now, we will let it proceed to the LLM like a regular message.
+
+            # --- Existing logic for other message types ---
+            elif msg_type == 'text':
                 body = message.get('text', {}).get('body')
             elif msg_type == 'image' or msg_type == 'video':
                 body = f"[User sent a {msg_type}]"

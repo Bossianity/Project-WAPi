@@ -132,136 +132,134 @@ def update_cell_value(service, sheet_id, sheet_name, row_index_1_based, col_inde
 # --- Main Campaign Processing Logic ---
 def process_outreach_campaign(sheet_id, agent_sender_id, app_context):
     """
-    Processes an outreach campaign based on data from a Google Sheet.
+    Processes an outreach campaign, attempting to send a structured interactive button message
+    from the 'MessageTemplate' sheet, and falling back to a simple text message if needed.
     """
-    with app_context: # Ensures current_app and other Flask context globals are available
+    with app_context:
         logging.info(f"Starting outreach campaign for Sheet ID: {sheet_id}, initiated by {agent_sender_id}.")
 
-        # --- Configuration ---
-        business_name = os.getenv('BUSINESS_NAME', 'X Dental Clinic') # Direct os.getenv
-        try:
-            delay_seconds = int(os.getenv('OUTREACH_MESSAGE_DELAY_SECONDS', "5"))
-        except ValueError:
-            logging.warning("Invalid OUTREACH_MESSAGE_DELAY_SECONDS, defaulting to 5.")
-            delay_seconds = 5
-
-        dubai_tz = pytz.timezone('Asia/Dubai') # Define Dubai timezone
-
-        # --- Initialization ---
+        # --- Initialization and Config ---
         sheets_service = get_google_sheets_service()
         if not sheets_service:
-            err_msg = f"Failed to initialize Google Sheets service. Campaign for {sheet_id} aborted."
-            logging.error(err_msg)
-            send_whatsapp_message(agent_sender_id, err_msg)
+            error_msg = "Failed to initialize Google Sheets service. Please check credentials."
+            logging.error(error_msg)
+            send_whatsapp_message(agent_sender_id, error_msg)
             return
 
-        rows_data, header_map = read_sheet_data(sheets_service, sheet_id)
-        if not rows_data and not header_map: # Check if read_sheet_data indicated a critical error
-            err_msg = f"Failed to read or validate data from Sheet ID: {sheet_id}. Ensure required headers are present and sheet is not empty. Campaign aborted."
-            logging.error(err_msg)
-            send_whatsapp_message(agent_sender_id, err_msg)
-            return
+        delay_seconds = int(os.getenv('OUTREACH_MESSAGE_DELAY_SECONDS', "5"))
+        dubai_tz = pytz.timezone('Asia/Dubai')
 
-        # Dynamically get column indices
-        phone_col_idx = header_map.get('PhoneNumber')
-        name_col_idx = header_map.get('ClientName')
-        status_col_idx = header_map.get('MessageStatus')
-        last_contacted_col_idx = header_map.get('LastContactedDate') # Optional
+        # --- Step 1: Attempt to Fetch Interactive Message Template ---
+        interactive_template = {}
+        simple_template = ""
+        is_interactive = False
 
-        if None in [phone_col_idx, name_col_idx, status_col_idx]:
-            err_msg = f"One or more critical column indices could not be determined from headers in {sheet_id}. Campaign aborted."
-            logging.error(f"{err_msg} Header map: {header_map}")
-            send_whatsapp_message(agent_sender_id, err_msg)
-            return
+        try:
+            # Fetch a block of cells that could contain the template
+            template_range = 'MessageTemplate!A1:D3'
+            template_sheet = sheets_service.spreadsheets().values().get(
+                spreadsheetId=sheet_id, 
+                range=template_range
+            ).execute()
+            values = template_sheet.get('values', [])
+            
+            # Helper to safely get cell value
+            def get_value(r, c):
+                try: return values[r][c]
+                except IndexError: return ""
 
-        logging.info(f"Successfully validated required column indices for sheet {sheet_id}. Header map: {header_map}")
-        logging.info(f"Starting campaign loop for sheet {sheet_id}, {len(rows_data)} rows to process.")
-
-        sent_count = 0
-        failed_count = 0
-        skipped_count = 0
-
-        # --- Campaign Loop ---
-        for row_info in rows_data:
-            row_values_dict = row_info['data']
-            original_row_idx_1_based = row_info['original_row_index']
-            logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based} Loop Start. Data: {row_values_dict}")
-
-            phone_number = row_values_dict.get('PhoneNumber')
-            client_name = row_values_dict.get('ClientName', 'Valued Customer') # Default if name is blank
-
-            raw_message_status = row_values_dict.get('MessageStatus') # Get the raw value
-            # Ensure current_status_for_check is an empty string if raw_message_status is None,
-            # otherwise convert to string, strip, and then lowercase for the check.
-            current_status_for_check = str(raw_message_status).strip().lower() if raw_message_status is not None else ""
-
-            # Basic Validation
-            if not phone_number:
-                logging.warning(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: Skipped due to missing PhoneNumber. Update status attempt follows.")
-                update_cell_value(sheets_service, sheet_id, DEFAULT_SHEET_NAME, original_row_idx_1_based, status_col_idx, "Failed - Missing PhoneNumber")
-                failed_count += 1
-                continue
-
-            # Idempotency Check
-            if current_status_for_check in ["sent", "replied", "completed", "success"]:
-                logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: Skipped due to existing status '{raw_message_status}'.") # Log raw status
-                skipped_count += 1
-                continue
-
-            # Message Personalization
-            effective_client_name = client_name if client_name and client_name.strip() else 'Valued Customer'
-
-            personalized_message = (
-                f"Hi {effective_client_name}, this is Layla from {business_name}. "
-                "Would you like to learn more about our services or perhaps schedule a consultation? 😊"
-            )
-
-            logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: Attempting to send message to {phone_number} with text: '{personalized_message[:75]}...'")
-            message_sent_successfully = send_whatsapp_message(phone_number, personalized_message)
-            logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: send_whatsapp_message for {phone_number} returned: {message_sent_successfully}")
-
-            current_timestamp_dubai = datetime.now(dubai_tz) # Get current time in Asia/Dubai
-            current_timestamp_str = current_timestamp_dubai.strftime("%Y-%m-%d %H:%M:%S") # Format for sheet
-            new_status_value = ""
-
-            if message_sent_successfully:
-                new_status_value = "Sent"
-                logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: Attempting to update status to '{new_status_value}' for {phone_number}.")
-                status_update_success = update_cell_value(sheets_service, sheet_id, DEFAULT_SHEET_NAME, original_row_idx_1_based, status_col_idx, new_status_value)
-                logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: update_cell_value (for status '{new_status_value}') returned: {status_update_success}")
-                if status_update_success:
-                    sent_count += 1
-                else:
-                    logging.error(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: Failed to UPDATE sheet status to '{new_status_value}' for {phone_number} after successful send. This is problematic.")
-                    # Message was sent, but status update failed. Consider this a partial success / needs attention.
-                    # Not incrementing sent_count here as the record isn't fully processed.
-                    # Not incrementing failed_count either as the message *was* sent.
-                    # This state might need a special status or manual review.
+            # Check for a specific marker to decide if it's an interactive template
+            if get_value(0, 0) == "INTERACTIVE_MESSAGE":
+                is_interactive = True
+                interactive_template = {
+                    'header': get_value(0, 1),
+                    'body': get_value(1, 1),
+                    'footer': get_value(2, 1),
+                    'buttons': [
+                        {'title': get_value(0, 2), 'id': get_value(0, 3)},
+                        {'title': get_value(1, 2), 'id': get_value(1, 3)},
+                        {'title': get_value(2, 2), 'id': get_value(2, 3)},
+                    ]
+                }
+                # Filter out empty buttons
+                interactive_template['buttons'] = [b for b in interactive_template['buttons'] if b['title'] and b['id']]
+                logging.info("Successfully loaded INTERACTIVE message template.")
             else:
-                new_status_value = "Failed - API Error"
-                logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: Attempting to update status to '{new_status_value}' for {phone_number} (send failed).")
-                status_update_success = update_cell_value(sheets_service, sheet_id, DEFAULT_SHEET_NAME, original_row_idx_1_based, status_col_idx, new_status_value)
-                logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: update_cell_value (for status '{new_status_value}') returned: {status_update_success}")
-                failed_count += 1 # Increment failed_count as message sending failed
+                # Fallback to simple text message from A1 if marker is not present
+                simple_template = get_value(0, 0)
+                logging.info("Loaded SIMPLE text message template from MessageTemplate!A1.")
 
-            # Update LastContactedDate if column exists
-            if last_contacted_col_idx is not None:
-                logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: Attempting to update LastContactedDate to '{current_timestamp_str}' for {phone_number}.")
-                date_update_success = update_cell_value(sheets_service, sheet_id, DEFAULT_SHEET_NAME, original_row_idx_1_based, last_contacted_col_idx, current_timestamp_str)
-                logging.info(f"Sheet {sheet_id} - Row {original_row_idx_1_based}: update_cell_value (for LastContactedDate) returned: {date_update_success}")
+        except Exception as e:
+            logging.warning(f"Could not read 'MessageTemplate' sheet (Error: {e}). Will use hardcoded default.")
 
-            # Delay between messages
-            if delay_seconds > 0:
-                time.sleep(delay_seconds)
+        # --- Step 2: Read Contact Data ---
+        rows_data, header_map = read_sheet_data(sheets_service, sheet_id)
+        if not rows_data or 'MessageStatus' not in header_map:
+            error_msg = "Failed to read contact data or missing required columns. Please check the sheet format."
+            logging.error(error_msg)
+            send_whatsapp_message(agent_sender_id, error_msg)
+            return
+            
+        # --- Step 3: Campaign Loop ---
+        for row_info in rows_data:
+            # Skip if already contacted or missing phone number
+            if row_info['data'].get('MessageStatus') == 'Sent' or not row_info['data'].get('PhoneNumber'):
+                continue
+            
+            # --- Message Personalization ---
+            placeholders = {
+                'ClientName': row_info['data'].get('ClientName', 'Valued Customer').strip(),
+                'ServiceName': row_info['data'].get('InterestedService', 'our services') 
+            }
+
+            message_sent = False
+            if is_interactive and interactive_template.get('buttons'):
+                # Personalize interactive message components
+                personalized_data = {
+                    'header': interactive_template['header'].format(**placeholders),
+                    'body': interactive_template['body'].format(**placeholders),
+                    'footer': interactive_template['footer'].format(**placeholders),
+                    'buttons': interactive_template['buttons'] # IDs are not personalized
+                }
+                message_sent = send_interactive_button_message(row_info['data']['PhoneNumber'], personalized_data)
+            else:
+                # Use simple template if it exists, otherwise use hardcoded default
+                if not simple_template:
+                     simple_template = f"Hi {{ClientName}}, this is Layla from Your Business. Would you like to learn more about {{ServiceName}}? 😊"
+                
+                personalized_message = simple_template.format(**placeholders)
+                message_sent = send_whatsapp_message(row_info['data']['PhoneNumber'], personalized_message)
+
+            # --- Update Status ---
+            if message_sent:
+                # Update the status in the sheet
+                status_range = f'Contacts!{header_map["MessageStatus"]}{row_info["original_row_index"]}'
+                sheets_service.spreadsheets().values().update(
+                    spreadsheetId=sheet_id,
+                    range=status_range,
+                    valueInputOption='RAW',
+                    body={'values': [['Sent']]}
+                ).execute()
+
+                # Update last contacted date
+                if 'LastContactedDate' in header_map:
+                    date_range = f'Contacts!{header_map["LastContactedDate"]}{row_info["original_row_index"]}'
+                    current_time = datetime.now(dubai_tz).strftime('%Y-%m-%d %H:%M:%S')
+                    sheets_service.spreadsheets().values().update(
+                        spreadsheetId=sheet_id,
+                        range=date_range,
+                        valueInputOption='RAW',
+                        body={'values': [[current_time]]}
+                    ).execute()
+
+            # Add delay between messages
+            time.sleep(delay_seconds)
 
         # --- Completion Notification ---
-        summary_message = (
-            f"Outreach campaign from Sheet ID {sheet_id} completed.\n"
-            f"Successfully Sent: {sent_count}\n"
-            f"Failed to Send: {failed_count}\n"
-            f"Skipped (already processed or missing data): {skipped_count}"
+        completion_msg = (
+            f"Outreach campaign completed!\n"
+            f"Sheet ID: {sheet_id}\n"
+            f"Total contacts processed: {len(rows_data)}"
         )
-        send_whatsapp_message(agent_sender_id, summary_message)
-        logging.info(f"Campaign {sheet_id} summary: Sent={sent_count}, Failed={failed_count}, Skipped={skipped_count}")
-
-        logging.info(f"Outreach campaign for Sheet ID: {sheet_id} finished.")
+        send_whatsapp_message(agent_sender_id, completion_msg)
+        logging.info(f"Outreach campaign completed for Sheet ID: {sheet_id}")

@@ -110,3 +110,55 @@ def set_webhook():
         logging.info("Webhook set successfully")
     else:
         logging.error("Failed to set webhook")
+
+def send_interactive_button_message(to, message_data):
+    """
+    Sends an interactive message with buttons using the Whapi.Cloud API.
+    
+    Args:
+        to (str): The recipient's phone number.
+        message_data (dict): A dictionary containing header, body, footer, and buttons.
+    """
+    endpoint = 'messages/interactive'
+    
+    buttons_payload = []
+    for btn in message_data.get('buttons', []):
+        buttons_payload.append({
+            "type": "quick_reply",
+            "title": btn.get('title'),
+            "id": btn.get('id')
+        })
+
+    payload = {
+        "to": to,
+        "type": "button",
+        "header": {
+            "text": message_data.get('header', '')
+        },
+        "body": {
+            "text": message_data.get('body', '')
+        },
+        "footer": {
+            "text": message_data.get('footer', '')
+        },
+        "action": {
+            "buttons": buttons_payload
+        }
+    }
+
+    # Clean up empty optional fields to prevent API errors
+    if not payload["header"]["text"]:
+        del payload["header"]
+    if not payload["footer"]["text"]:
+        del payload["footer"]
+    if not payload["action"]["buttons"]:
+        return False # Cannot send a button message with no buttons
+
+    response = send_whapi_request(endpoint, payload)
+    
+    if response and response.get('sent'):
+        logging.info(f"Successfully sent interactive button message to {to}.")
+        return True
+    else:
+        logging.error(f"Failed to send interactive button message to {to}. Response: {response}")
+        return False
