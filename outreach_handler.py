@@ -132,65 +132,121 @@ def update_cell_value(service, sheet_id, sheet_name, row_index_1_based, col_inde
 # --- Main Campaign Processing Logic ---
 def process_outreach_campaign(sheet_id, agent_sender_id, app_context):
     """
-    Processes an outreach campaign, attempting to send a structured interactive button message
-    from the 'MessageTemplate' sheet, and falling back to a simple text message if needed.
+    Processes an outreach campaign, reading contacts and message templates
+    from dynamically named sheets and executing the full sending loop.
     """
     with app_context:
         logging.info(f"Starting outreach campaign for Sheet ID: {sheet_id}, initiated by {agent_sender_id}.")
 
-        # --- Initialization and Config ---
         sheets_service = get_google_sheets_service()
         if not sheets_service:
-            error_msg = "Failed to initialize Google Sheets service. Please check credentials."
-            logging.error(error_msg)
-            send_whatsapp_message(agent_sender_id, error_msg)
+            send_whatsapp_message(agent_sender_id, "Error: Could not connect to Google Sheets service.")
             return
 
-        delay_seconds = int(os.getenv('OUTREACH_MESSAGE_DELAY_SECONDS', "5"))
+        # --- Get config from environment variables ---
+        template_sheet_name = os.getenv('MESSAGE_TEMPLATE_SHEET_NAME', 'MessageTemplate')
+        contacts_sheet_name = os.getenv('CONTACTS_SHEET_NAME', 'Sheet1')
+        delay_seconds = int(os.getenv('OUTREACH_MESSAGE_DELAY_SECONDS', 5))
         dubai_tz = pytz.timezone('Asia/Dubai')
 
-        # --- Step 1: Attempt to Fetch Interactive Message Template ---
-        interactive_template = {}
-        simple_template = ""
-        is_interactive = False
-
+        # --- Step 1: Fetch Message Template ---
+        interactive_template, simple_template, is_interactive = {}, "", False
         try:
-            # Fetch a block of cells that could contain the template
-            template_range = 'MessageTemplate!A1:D3'
-            template_sheet = sheets_service.spreadsheets().values().get(
-                spreadsheetId=sheet_id, 
-                range=template_range
-            ).execute()
-            values = template_sheet.get('values', [])
+            template_range = f"'{template_sheet_name}'!A1:D3"
+            template_sheet_data = sheets_service.spreadsheets().values().get(spreadsheetId=sheet_id, range=template_range).execute()
+            values = template_sheet_data.get('values', [])
             
-            # Helper to safely get cell value
             def get_value(r, c):
                 try: return values[r][c]
                 except IndexError: return ""
 
-            # Check for a specific marker to decide if it's an interactive template
             if get_value(0, 0) == "INTERACTIVE_MESSAGE":
                 is_interactive = True
                 interactive_template = {
-                    'header': get_value(0, 1),
-                    'body': get_value(1, 1),
-                    'footer': get_value(2, 1),
+                    'header': get_value(0, 1), 'body': get_value(1, 1), 'footer': get_value(2, 1),
                     'buttons': [
                         {'title': get_value(0, 2), 'id': get_value(0, 3)},
                         {'title': get_value(1, 2), 'id': get_value(1, 3)},
                         {'title': get_value(2, 2), 'id': get_value(2, 3)},
                     ]
                 }
-                # Filter out empty buttons
-                interactive_template['buttons'] = [b for b in interactive_template['buttons'] if b['title'] and b['id']]
+                interactive_template['buttons'] = [b for b in interactive_template['buttons'] if b.get('title') and b.get('id')]
                 logging.info("Successfully loaded INTERACTIVE message template.")
             else:
-                # Fallback to simple text message from A1 if marker is not present
                 simple_template = get_value(0, 0)
-                logging.info("Loaded SIMPLE text message template from MessageTemplate!A1.")
-
+                logging.info("Loaded SIMPLE text message template.")
         except Exception as e:
-            logging.warning(f"Could not read 'MessageTemplate' sheet (Error: {e}). Will use hardcoded default.")
+            logging.warning(f"Could not read '{template_sheet_name}' sheet. Using default message. Error: {e}")
+
+        # --- Step 2: Read Contact Data ---
+        rows_data, header_map = read_sheet_data(sheets_service, sheet_id, contacts_sheet_name)
+        if not rows_data:
+            err_msg = f"Failed to read contact data from sheet '{contacts_sheet_name}'. Please check the sheet name and format."
+            send_whatsapp_message(agent_sender_id, err_msg)
+            return
+
+        # --- Step 3: THE MISSING CAMPAIGN LOOP ---
+        sent_count, failed_count, skipped_count = 0, 0, 0
+        for row_info in rows_data:
+            row_values_dict = row_info['data']
+            original_row_idx_1_based = row_info['original_row_index']
+            
+            phone_number = row_values_dict.get('PhoneNumber')
+            if not phone_number:
+                skipped_count += 1
+                continue
+
+            current_status = str(row_values_dict.get('MessageStatus', '')).strip().lower()
+            if current_status in ["sent", "replied", "completed", "success"]:
+                skipped_count += 1
+                continue
+            
+            placeholders = {
+                'ClientName': row_values_dict.get('ClientName', 'Valued Customer').strip(),
+                'ServiceName': row_values_dict.get('InterestedService', 'our services')
+            }
+
+            message_sent = False
+            if is_interactive and interactive_template.get('buttons'):
+                personalized_data = {
+                    'header': interactive_template['header'].format(**placeholders),
+                    'body': interactive_template['body'].format(**placeholders),
+                    'footer': interactive_template['footer'].format(**placeholders),
+                    'buttons': interactive_template['buttons']
+                }
+                logging.info(f"Row {original_row_idx_1_based}: Sending INTERACTIVE message to {phone_number}.")
+                message_sent = send_interactive_button_message(phone_number, personalized_data)
+            else:
+                if not simple_template:
+                    simple_template = f"Hi {{ClientName}}, this is Layla from Your Business. Would you like to learn more about {{ServiceName}}?"
+                personalized_message = simple_template.format(**placeholders)
+                logging.info(f"Row {original_row_idx_1_based}: Sending SIMPLE text message to {phone_number}.")
+                message_sent = send_whatsapp_message(phone_number, personalized_message)
+            
+            new_status = "Sent" if message_sent else "Failed - API Error"
+            update_cell_value(sheets_service, sheet_id, contacts_sheet_name, original_row_idx_1_based, header_map['MessageStatus'], new_status)
+            
+            if message_sent:
+                sent_count += 1
+            else:
+                failed_count += 1
+
+            if 'LastContactedDate' in header_map:
+                timestamp = datetime.now(dubai_tz).strftime("%Y-%m-%d %H:%M:%S")
+                update_cell_value(sheets_service, sheet_id, contacts_sheet_name, original_row_idx_1_based, header_map['LastContactedDate'], timestamp)
+
+            time.sleep(delay_seconds)
+
+        # --- Step 4: Completion Notification ---
+        summary_message = (
+            f"Outreach campaign from Sheet ID {sheet_id} completed.\n"
+            f"Successfully Sent: {sent_count}\n"
+            f"Failed to Send: {failed_count}\n"
+            f"Skipped (already processed or no phone number): {skipped_count}"
+        )
+        send_whatsapp_message(agent_sender_id, summary_message)
+        logging.info(f"Campaign {sheet_id} finished. Summary: {summary_message}")
+
 
         # --- Step 2: Read Contact Data ---
         rows_data, header_map = read_sheet_data(sheets_service, sheet_id)
