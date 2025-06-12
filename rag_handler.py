@@ -2,6 +2,8 @@ import os
 import logging
 import json
 import shutil
+import time
+import google.api_core.exceptions
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -21,9 +23,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def initialize_vector_store():
     """
-    Initializes or loads a FAISS vector store using Google Generative AI Embeddings.
+    Initializes or loads a FAISS vector store with a retry mechanism
+    to handle potential startup timeouts.
     """
-    # Using "GEMINI_API_KEY" as specified by the user's environment variable on Render
     gemini_api_key_local = os.getenv('GEMINI_API_KEY')
     if not gemini_api_key_local:
         logging.error("GEMINI_API_KEY environment variable not set. Cannot initialize vector store.")
@@ -35,47 +37,50 @@ def initialize_vector_store():
         logging.error(f"Failed to initialize GoogleGenerativeAIEmbeddings: {e}", exc_info=True)
         return None
 
+    # Logic for forcing a re-index remains the same
     force_reindex = os.getenv('FORCE_REINDEX', 'false').lower() == 'true'
-    if force_reindex:
-        if os.path.exists(VECTOR_STORE_PATH):
-            logging.info(f"FORCE_REINDEX is true. Removing existing vector store at {VECTOR_STORE_PATH} to rebuild.")
-            try:
-                shutil.rmtree(VECTOR_STORE_PATH)
-                logging.info(f"Successfully removed {VECTOR_STORE_PATH}.")
-            except Exception as e:
-                logging.error(f"Error removing directory {VECTOR_STORE_PATH}: {e}", exc_info=True)
-        else:
-            logging.info(f"FORCE_REINDEX is true, but no existing vector store found at {VECTOR_STORE_PATH}. Proceeding to create a new one.")
+    if force_reindex and os.path.exists(VECTOR_STORE_PATH):
+        logging.info(f"FORCE_REINDEX is true. Removing existing vector store at {VECTOR_STORE_PATH}.")
+        try:
+            shutil.rmtree(VECTOR_STORE_PATH)
+        except Exception as e:
+            logging.error(f"Error removing directory {VECTOR_STORE_PATH}: {e}", exc_info=True)
 
     if not os.path.exists(VECTOR_STORE_PATH):
-        try:
-            os.makedirs(VECTOR_STORE_PATH)
-            logging.info(f"Created directory {VECTOR_STORE_PATH}.")
-        except Exception as e:
-            logging.error(f"Error creating directory {VECTOR_STORE_PATH}: {e}", exc_info=True)
-            return None
+        os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
 
-    faiss_store = None
+    # Attempt to load an existing index first
     if os.path.exists(os.path.join(VECTOR_STORE_PATH, "index.faiss")):
         try:
             logging.info(f"Attempting to load existing FAISS index from {VECTOR_STORE_PATH}")
             faiss_store = FAISS.load_local(VECTOR_STORE_PATH, embeddings_object, allow_dangerous_deserialization=True)
             logging.info("FAISS index loaded successfully.")
+            return faiss_store
         except Exception as e:
-            logging.error(f"Failed to load existing FAISS index from {VECTOR_STORE_PATH}: {e}. Attempting to create a new one.", exc_info=True)
-            faiss_store = None
-
-    if not faiss_store:
+            logging.error(f"Failed to load existing FAISS index: {e}. Will attempt to create a new one.", exc_info=True)
+    
+    # --- NEW: Create a new index with a retry loop ---
+    logging.info("No existing index found. Creating new FAISS index...")
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            logging.info(f"Creating new FAISS index at {VECTOR_STORE_PATH}")
+            # This is the line that was failing.
             faiss_store = FAISS.from_texts(["init"], embeddings_object)
             faiss_store.save_local(VECTOR_STORE_PATH)
             logging.info("New FAISS index created and saved successfully.")
+            return faiss_store
+        except google.api_core.exceptions.DeadlineExceeded as e:
+            logging.warning(f"Attempt {attempt + 1}/{max_retries} failed with DeadlineExceeded: {e}. Retrying in {2 ** attempt} seconds...")
+            time.sleep(2 ** attempt) # Exponential backoff
         except Exception as e:
-            logging.error(f"Error creating or saving new FAISS index at {VECTOR_STORE_PATH}: {e}", exc_info=True)
-            return None
+            # Catch other potential errors during creation
+            logging.error(f"An unexpected error occurred on attempt {attempt + 1}/{max_retries} while creating index: {e}", exc_info=True)
+            time.sleep(2 ** attempt)
 
-    return faiss_store
+    # If all retries fail
+    logging.critical("All attempts to create a new FAISS index failed. RAG system will be unavailable.")
+    return None
+
 
 # --- Processed Files Log Management ---
 def get_processed_files_log() -> dict:
