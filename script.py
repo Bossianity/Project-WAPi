@@ -980,24 +980,21 @@ def webhook_google_sync():
         logging.exception(f"Error in /webhook-google-sync: {e}")
         return jsonify(error='Internal Server Error'), 500
 
-@app.route('/hook/messages', methods=['POST'])
+@app.route('/hook', methods=['POST'])
 def handle_new_messages():
     try:
-        # 1. Directly get the JSON data and look for the 'messages' list
         data = request.json or {}
         incoming_messages = data.get('messages', [])
 
-        # If there are no messages, we can exit early.
         if not incoming_messages:
-            logging.info("Webhook received a request without a 'messages' list.")
             return jsonify(status='success_no_messages'), 200
 
-        # 2. Loop through each message in the list
         for message in incoming_messages:
             if message.get('from_me'):
-                continue # Ignore messages sent by the bot itself
+                continue
 
-            sender = message.get('chat_id')
+            # CORRECTED: Using 'from' field to get sender ID as per the guide
+            sender = message.get('from')
             msg_type = message.get('type')
             
             body = None
@@ -1008,7 +1005,6 @@ def handle_new_messages():
                 body = f"[User sent a {msg_type}]"
                 if message.get('media', {}).get('caption'):
                     body += f" with caption: {message['media']['caption']}"
-                logging.info(f"Received {msg_type} message from {sender}. Body set for RAG analysis.")
             elif msg_type == 'audio':
                 media_url = message.get('media', {}).get('url')
                 if media_url and openai_client:
@@ -1020,14 +1016,12 @@ def handle_new_messages():
                             tmp_audio_file_path = tmp_audio_file.name
                         
                         transcript = openai_client.audio.transcriptions.create(
-                            model="whisper-1",
-                            file=open(tmp_audio_file_path, "rb")
+                            model="whisper-1", file=open(tmp_audio_file_path, "rb")
                         )
                         body = transcript.text
-                        logging.info(f"Transcription result for {sender}: {body}")
                         os.remove(tmp_audio_file_path)
                     except Exception as e:
-                        logging.error(f"Error during audio transcription for {sender}: {e}")
+                        logging.error(f"Error during audio transcription: {e}")
                         body = "[Audio transcription failed.]"
                 else:
                     body = "[Audio received, but could not be transcribed.]"

@@ -9,7 +9,7 @@ from requests_toolbelt.multipart.encoder import MultipartEncoder
 
 # Load environment variables for Whapi.Cloud
 WHAPI_API_URL = os.getenv('API_URL')
-WHAPI_TOKEN = os.getenv('TOKEN')
+WHAPI_TOKEN = os.getenv('API_TOKEN')
 
 # Standard logging calls (logging.info, logging.error, etc.) will be used.
 # These will inherit the basicConfig from the main script.py if this module is imported,
@@ -20,7 +20,7 @@ def send_whapi_request(endpoint, params=None, method='POST', is_media=False, tim
     Generic function to send requests to the Whapi.Cloud API with retry logic.
     """
     if not WHAPI_API_URL or not WHAPI_TOKEN:
-        logging.error("WHAPI API_URL or TOKEN not configured.")
+        logging.error("WHAPI API_URL or API_TOKEN not configured in environment variables.")
         return None
 
     headers = {'Authorization': f"Bearer {WHAPI_TOKEN}"}
