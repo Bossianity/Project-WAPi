@@ -1,0 +1,19 @@
+2025-05-30 01:58:30,551 - INFO - Loaded persona name 'WhatsApp Assistant' from persona.json if present. System prompt is now controlled by script.py's BASE_PROMPT.
+2025-05-30 01:58:30,552 - ERROR - OPENAI_API_KEY not found; AI responses will fail.
+2025-05-30 01:58:30,553 - INFO - Initializing RAG components...
+2025-05-30 01:58:30,553 - ERROR - OPENAI_API_KEY_RAG (or OPENAI_API_KEY) not found; RAG functionality will be disabled.
+2025-05-30 01:58:30,553 - ERROR - GOOGLE_CALENDAR_CREDENTIALS environment variable not found
+2025-05-30 01:58:30,553 - ERROR - CALENDAR_CREDENTIAL_VERIFICATION: FAILED to initialize Google Calendar service. Check credentials and API permissions.
+2025-05-30 01:58:30,553 - WARNING - Google Calendar service could not be initialized. Appointment scheduling will be disabled.
+ * Serving Flask app 'script'
+ * Debug mode: off
+2025-05-30 01:58:30,557 - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5001
+ * Running on http://192.168.0.2:5001
+2025-05-30 01:58:30,558 - INFO - [33mPress CTRL+C to quit[0m
+2025-05-30 01:58:42,723 - INFO - Incoming from 1234567890@s.whatsapp.net (UID: 1234567890swhatsappnet): Book a meeting for tomorrow at 3pm
+2025-05-30 01:58:43,025 - WARNING - WhatsApp send attempt 1 failed for 1234567890 with HTTPError 401: {"success":false,"message":"Invalid API key"}
+2025-05-30 01:58:43,025 - ERROR - WASender API returned 401 Unauthorized. Check API token.
+2025-05-30 01:58:43,025 - ERROR - Failed to send chunk 1/1 to 1234567890@s.whatsapp.net. Aborting further sends for this message.
+2025-05-30 01:58:43,026 - INFO - 127.0.0.1 - - [30/May/2025 01:58:43] "POST /webhook HTTP/1.1" 200 -
