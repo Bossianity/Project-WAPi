@@ -100,12 +100,13 @@ def set_webhook():
 
     logging.info(f"Attempting to set webhook to: {bot_url}")
     settings = {
-        'webhooks': [
-            {
-                'url': bot_url,
-                'events': [{'type': "messages", 'method': "post"}],
-                'mode': "method"
-            }
-        ]
+        'webhook': {
+            'url': bot_url,
+            'events': ['messages', 'statuses']
+        }
     }
-    send_whapi_request('settings', settings, method='PATCH', timeout=15)
+    response = send_whapi_request('settings', settings, method='PATCH', timeout=15)
+    if response:
+        logging.info("Webhook set successfully")
+    else:
+        logging.error("Failed to set webhook")
