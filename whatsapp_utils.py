@@ -155,3 +155,56 @@ def send_interactive_button_message(to, message_data):
     else:
         logging.error(f"Failed to send interactive button message to {to}. Response: {response}")
         return False
+
+
+def send_interactive_list_message(to, message_data):
+    """
+    Sends an interactive list message using the Whapi.Cloud API.
+    """
+    endpoint = 'messages/interactive'
+
+    action_sections = []
+    for section_data in message_data.get('sections', []):
+        rows = []
+        for row_data in section_data.get('rows', []):
+            row = {"id": row_data["id"], "title": row_data["title"]}
+            if "description" in row_data:
+                row["description"] = row_data["description"]
+            rows.append(row)
+
+        current_section = {"rows": rows}
+        if "title" in section_data:
+            current_section["title"] = section_data["title"]
+        action_sections.append(current_section)
+
+    if not action_sections or not any(s.get("rows") for s in action_sections):
+        logging.error(f"Attempted to send list message to {to} with no sections or rows.")
+        return False
+
+    payload = {
+        "to": to,
+        "type": "list",
+        "body": {"text": message_data.get('body', '')},
+        "action": {
+            "button": message_data.get('label', 'View Options'), # Default label if not provided
+            "sections": action_sections
+        }
+    }
+
+    if 'header' in message_data and message_data['header']:
+        payload['header'] = {"type": "text", "text": message_data['header']}
+
+    if 'footer' in message_data and message_data['footer']:
+        payload['footer'] = {"text": message_data['footer']}
+
+    logging.info(f"Attempting to send interactive list message to {to}. Final payload (before sending):")
+    logging.info(json.dumps(payload, indent=2))
+
+    response = send_whapi_request(endpoint, payload)
+
+    if response and response.get('sent'):
+        logging.info(f"Successfully sent interactive list message to {to}.")
+        return True
+    else:
+        logging.error(f"Failed to send interactive list message to {to}. Response: {response}")
+        return False
