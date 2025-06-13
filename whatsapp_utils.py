@@ -126,25 +126,34 @@ def send_interactive_button_message(to, message_data):
             "id": btn.get('id')
         })
 
-    # This payload structure now exactly matches the working example.
     payload = {
         "to": to,
         "type": "button",
-        "header": { "text": message_data.get('header', '') },
-        "body": { "text": message_data.get('body', '') },
-        "footer": { "text": message_data.get('footer', '') },
-        "action": { "buttons": buttons_payload },
-        "view_once": False # Added for full compatibility with the working example
+        "view_once": False
     }
 
-    # Clean up empty optional fields to prevent API errors
-    if not payload["header"]["text"]: del payload["header"]
-    if not payload["footer"]["text"]: del payload["footer"]
-    if not payload["action"]["buttons"]:
-        logging.error(f"Attempted to send interactive message to {to} with no buttons.")
+    header_text = message_data.get('header')
+    if header_text:
+        payload['header'] = {"text": header_text}
+
+    body_text = message_data.get('body')
+    if body_text:
+        payload['body'] = {"text": body_text}
+    else:
+        logging.error(f"Attempted to send interactive button message to {to} with no body text.")
         return False
 
-    logging.info(f"Attempting to send interactive message to {to}. Final payload (before sending):")
+    footer_text = message_data.get('footer')
+    if footer_text:
+        payload['footer'] = {"text": footer_text}
+
+    if not buttons_payload:
+        logging.error(f"Attempted to send interactive button message to {to} with no buttons.")
+        return False
+    payload['action'] = {"buttons": buttons_payload}
+
+
+    logging.info(f"Attempting to send interactive button message to {to}. Final payload (before sending):")
     logging.info(json.dumps(payload, indent=2))
 
     response = send_whapi_request(endpoint, payload)
@@ -159,43 +168,78 @@ def send_interactive_button_message(to, message_data):
 
 def send_interactive_list_message(to, message_data):
     """
-    Sends an interactive list message using the Whapi.Cloud API.
+    Sends an interactive list message using the Whapi.Cloud API,
+    matching the specified payload structure.
     """
     endpoint = 'messages/interactive'
-
-    action_sections = []
-    for section_data in message_data.get('sections', []):
-        rows = []
-        for row_data in section_data.get('rows', []):
-            row = {"id": row_data["id"], "title": row_data["title"]}
-            if "description" in row_data:
-                row["description"] = row_data["description"]
-            rows.append(row)
-
-        current_section = {"rows": rows}
-        if "title" in section_data:
-            current_section["title"] = section_data["title"]
-        action_sections.append(current_section)
-
-    if not action_sections or not any(s.get("rows") for s in action_sections):
-        logging.error(f"Attempted to send list message to {to} with no sections or rows.")
-        return False
 
     payload = {
         "to": to,
         "type": "list",
-        "body": {"text": message_data.get('body', '')},
-        "action": {
-            "button": message_data.get('label', 'View Options'), # Default label if not provided
-            "sections": action_sections
-        }
+        "view_once": False
     }
 
-    if 'header' in message_data and message_data['header']:
-        payload['header'] = {"type": "text", "text": message_data['header']}
+    header_text = message_data.get('header')
+    if header_text:
+        payload['header'] = {"text": header_text}
 
-    if 'footer' in message_data and message_data['footer']:
-        payload['footer'] = {"text": message_data['footer']}
+    body_text = message_data.get('body')
+    if body_text:
+        payload['body'] = {"text": body_text}
+    else:
+        logging.error(f"Attempted to send interactive list message to {to} with no body text.")
+        return False
+
+    footer_text = message_data.get('footer')
+    if footer_text:
+        payload['footer'] = {"text": footer_text}
+
+    raw_sections = message_data.get('sections', [])
+    if not raw_sections:
+        logging.error(f"Attempted to send interactive list message to {to} with no sections.")
+        return False
+
+    sections_payload = []
+    for section_data in raw_sections:
+        row_payload = []
+        raw_rows = section_data.get('rows', [])
+        if not raw_rows:
+             logging.warning(f"Skipping section with no rows for interactive list message to {to}. Section title: {section_data.get('title')}")
+             continue
+
+        for row_data in raw_rows:
+            if not row_data.get('id') or not row_data.get('title'):
+                logging.warning(f"Skipping row with missing ID or title for interactive list message to {to}.")
+                continue
+
+            current_row = {
+                "id": row_data['id'],
+                "title": row_data['title']
+            }
+            if row_data.get('description'):
+                current_row['description'] = row_data['description']
+            row_payload.append(current_row)
+
+        if not row_payload:
+            logging.warning(f"Section '{section_data.get('title')}' resulted in no valid rows for list message to {to}.")
+            continue
+
+        current_section = {"rows": row_payload}
+        section_title = section_data.get('title')
+        if section_title: # Only add title key if it exists and is not empty
+            current_section['title'] = section_title
+        sections_payload.append(current_section)
+
+    if not sections_payload:
+        logging.error(f"Attempted to send interactive list message to {to} but no valid sections or rows could be constructed.")
+        return False
+
+    payload['action'] = {
+        "list": {
+            "label": message_data.get('label', "View Options"),
+            "sections": sections_payload
+        }
+    }
 
     logging.info(f"Attempting to send interactive list message to {to}. Final payload (before sending):")
     logging.info(json.dumps(payload, indent=2))
