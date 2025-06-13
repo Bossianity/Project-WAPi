@@ -1158,8 +1158,7 @@ def handle_new_messages():
                 body_for_fallback = button_title
                 logging.info(f"User {sender} clicked button: ID='{button_id}', Title='{button_title}'")
 
-                # IMPORTANT CHANGE HERE
-                if button_id and button_id.endswith('button_id1'):
+                if button_id and button_id.endswith('button_1_id'):
                     sell_flow_states[sender] = {'state': 'awaiting_seller_name', 'data': {}}
                     send_whatsapp_message(sender, "Great! We can certainly help with that. To start, could you please tell me your full name?")
                     continue
