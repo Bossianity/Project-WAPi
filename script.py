@@ -1080,9 +1080,9 @@ def handle_new_messages():
                         "footer": "Select one from the list below:",
                         "label": "Press here to select property type",
                         "sections": [{"title": "Type of Property", "rows": [
-                            {"id": "pt_1", "title": "Villa"}, {"id": "pt_2", "title": "Apartment"},
-                            {"id": "pt_3", "title": "Penthouse"}, {"id": "pt_4", "title": "Townhouse"},
-                            {"id": "pt_5", "title": "Other"}
+                            {"id": "type_villa", "title": "Villa"}, {"id": "type_apartment", "title": "Apartment"},
+                            {"id": "type_penthouse", "title": "Penthouse"}, {"id": "type_townhouse", "title": "Townhouse"},
+                            {"id": "type_other", "title": "Other"}
                         ]}]
                     }
                     send_interactive_list_message(sender, type_list_data)
@@ -1158,8 +1158,8 @@ def handle_new_messages():
                 body_for_fallback = button_title
                 logging.info(f"User {sender} clicked button: ID='{button_id}', Title='{button_title}'")
 
-
-                if button_id == 'button_id1':
+                # IMPORTANT CHANGE HERE
+                if button_id and button_id.endswith('button_id1'):
                     sell_flow_states[sender] = {'state': 'awaiting_seller_name', 'data': {}}
                     send_whatsapp_message(sender, "Great! We can certainly help with that. To start, could you please tell me your full name?")
                     continue
