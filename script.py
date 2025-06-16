@@ -36,10 +36,27 @@ from google_drive_handler import (
     get_google_sheet_content
 )
 from outreach_handler import process_outreach_campaign
-from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, set_webhook
+# send_interactive_list_message is added to this import
+from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, set_webhook, send_interactive_list_message
+
 
 # ─── Data Ingestion Configuration ──────────────────────────────────────────────
 COMPANY_DATA_FOLDER = 'company_data'
+
+# New, simple state tracker for the sell property flow
+sell_flow_states = {}
+
+# Hardcoded data for UAE cities and areas for the list messages
+UAE_CITIES = ["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "Ras Al Khaimah", "Fujairah", "Umm Al Quwain"]
+UAE_AREAS = {
+    "Dubai": ["Dubai Marina", "Downtown Dubai", "Palm Jumeirah", "JVC", "Business Bay", "Arabian Ranches", "Other"],
+    "Abu Dhabi": ["Al Reem Island", "Saadiyat Island", "Yas Island", "Khalifa City", "Al Raha Beach", "Other"],
+    "Sharjah": ["Al Majaz", "Al Nahda", "Muwaileh", "Al Khan", "Other"],
+    "Ajman": ["Al Rashidiya", "Ajman Downtown", "Al Jurf", "Other"],
+    "Ras Al Khaimah": ["Al Hamra Village", "Mina Al Arab", "Al Marjan Island", "Other"],
+    "Fujairah": ["Fujairah City", "Dibba", "Other"],
+    "Umm Al Quwain": ["Umm Al Quwain City", "Al Salamah", "Other"]
+}
 
 # ─── Google Calendar Configuration ─────────────────────────────────────────────
 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -175,7 +192,7 @@ def detect_scheduling_intent(message):
 # === DATETIME EXTRACTION FUNCTION (extract_datetime_with_ai) ===
 def extract_datetime_with_ai(message):
     """Use AI to extract and normalize datetime information from natural language, assuming Dubai time."""
-    current_display_time = datetime.now(TARGET_DISPLAY_TIMEZONE) 
+    current_display_time = datetime.now(TARGET_DISPLAY_TIMEZONE)
 
     extraction_prompt = f"""
     Extract date and time information from this message: "{message}"
@@ -241,13 +258,13 @@ def create_calendar_event(gcal_service, title, start_datetime_naive_event_tz, en
         # Localize naive datetimes to EVENT_STORAGE_TIMEZONE (e.g., New York)
         if start_datetime_naive_event_tz.tzinfo is None:
             start_datetime_event_tz_aware = TIMEZONE.localize(start_datetime_naive_event_tz)
-        else: 
+        else:
             logging.warning("create_calendar_event received an already aware start_datetime. Converting to EVENT_STORAGE_TIMEZONE.")
             start_datetime_event_tz_aware = start_datetime_naive_event_tz.astimezone(TIMEZONE)
 
         if end_datetime_naive_event_tz.tzinfo is None:
             end_datetime_event_tz_aware = TIMEZONE.localize(end_datetime_naive_event_tz)
-        else: 
+        else:
             logging.warning("create_calendar_event received an already aware end_datetime. Converting to EVENT_STORAGE_TIMEZONE.")
             end_datetime_event_tz_aware = end_datetime_naive_event_tz.astimezone(TIMEZONE)
 
@@ -258,11 +275,11 @@ def create_calendar_event(gcal_service, title, start_datetime_naive_event_tz, en
             'description': description,
             'start': {
                 'dateTime': start_datetime_event_tz_aware.isoformat(),
-                'timeZone': TIMEZONE.zone, 
+                'timeZone': TIMEZONE.zone,
             },
             'end': {
                 'dateTime': end_datetime_event_tz_aware.isoformat(),
-                'timeZone': TIMEZONE.zone,   
+                'timeZone': TIMEZONE.zone,
             },
             'reminders': {
                 'useDefault': False,
@@ -279,7 +296,7 @@ def create_calendar_event(gcal_service, title, start_datetime_naive_event_tz, en
         logging.info(f"Creating calendar event with payload: {json.dumps(event_body, indent=2)}")
         # Assuming 'mohomer12@gmail.com' is the target calendar ID
         created_event_response = gcal_service.events().insert(calendarId='mohomer12@gmail.com', body=event_body).execute()
-        
+
         if created_event_response and created_event_response.get('id'):
             logging.info(f"CALENDAR_DEBUG: Event insertion successful. Event ID: {created_event_response.get('id')}, HTML Link: {created_event_response.get('htmlLink')}")
         else:
@@ -320,12 +337,12 @@ def check_availability(gcal_service, start_datetime_naive_event_tz, end_datetime
 
         if start_datetime_naive_event_tz.tzinfo is None:
             start_datetime_event_tz_aware = TIMEZONE.localize(start_datetime_naive_event_tz)
-        else: 
+        else:
             start_datetime_event_tz_aware = start_datetime_naive_event_tz.astimezone(TIMEZONE)
 
         if end_datetime_naive_event_tz.tzinfo is None:
             end_datetime_event_tz_aware = TIMEZONE.localize(end_datetime_naive_event_tz)
-        else: 
+        else:
             end_datetime_event_tz_aware = end_datetime_naive_event_tz.astimezone(TIMEZONE)
 
         start_utc = start_datetime_event_tz_aware.astimezone(pytz.UTC)
@@ -448,7 +465,7 @@ def send_appointment_request_email(user_name, user_phone, preferred_datetime_str
     """Sends an email with the collected appointment request details."""
     sender_email = os.getenv('APPOINTMENT_EMAIL_SENDER')
     sender_password = os.getenv('APPOINTMENT_EMAIL_PASSWORD')
-    receiver_email = 'mohomer12@gmail.com' 
+    receiver_email = 'mohomer12@gmail.com'
     smtp_server = os.getenv('APPOINTMENT_SMTP_SERVER', 'smtp.gmail.com')
     smtp_port = int(os.getenv('APPOINTMENT_SMTP_PORT', 587))
 
@@ -489,6 +506,51 @@ def send_appointment_request_email(user_name, user_phone, preferred_datetime_str
         logging.error(f"Generic error sending appointment request email. Subject: '{subject}'. Error: {e}", exc_info=True)
         return False
 
+# Add this function in script.py
+
+def send_property_lead_email(lead_data):
+    """Sends an email with the collected property-for-sale lead details."""
+    sender_email = os.getenv('LEAD_EMAIL_SENDER')
+    sender_password = os.getenv('LEAD_EMAIL_PASSWORD')
+    receiver_email = os.getenv('LEAD_EMAIL_RECEIVER')
+
+    if not all([sender_email, sender_password, receiver_email]):
+        logging.error("Email credentials/receiver not configured for property leads.")
+        return False
+
+    subject = f"New 'For Sale' Property Lead via WhatsApp: {lead_data.get('name')}"
+    body_parts = [
+        "A new property lead has been captured by the bot from a seller:\n",
+        f"Client Name: {lead_data.get('name')}",
+        f"WhatsApp Number: {lead_data.get('phone')}",
+        "--- Property Details ---",
+        f"Type: {lead_data.get('property_type')}",
+        f"City: {lead_data.get('city')}",
+        f"Area: {lead_data.get('area')}",
+    ]
+    if 'building' in lead_data:
+        body_parts.append(f"Building Name: {lead_data.get('building')}")
+
+    body_parts.append(f"Asking Price: {lead_data.get('price')} AED")
+
+    body = "\n".join(body_parts)
+
+    msg = MIMEText(body, _charset='utf-8')
+    msg['Subject'] = subject
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, receiver_email, msg.as_string())
+        logging.info("Successfully sent property lead email.")
+        return True
+    except Exception as e:
+        logging.error(f"Error sending property lead email: {e}", exc_info=True)
+        return False
+
 # ─── Conversation history storage ─────────────────────────────────────────────
 CONV_DIR = 'conversations'
 os.makedirs(CONV_DIR, exist_ok=True)
@@ -515,7 +577,7 @@ def load_history(uid):
                 else:
                     # Use logging if it's configured in your main script, otherwise print
                     logging.warning(f"Skipping invalid history item for {uid}: {item}")
-            
+
             # --- Truncate history after loading ---
             if len(history_messages) > MAX_HISTORY_TURNS_TO_LOAD * 2:
                 logging.info(f"Loaded {len(history_messages)} messages ({len(history_messages)//2} turns) for {uid}. Truncating to last {MAX_HISTORY_TURNS_TO_LOAD} turns ({MAX_HISTORY_TURNS_TO_LOAD * 2} messages).")
@@ -604,7 +666,7 @@ def extract_appointment_details_for_email(conversation_history_str):
             response_text = response_text[len('```json'):].strip()
         if response_text.endswith('```'):
             response_text = response_text[:-len('```')].strip()
-        
+
         logging.info(f"LLM extracted for email: {response_text}")
         details = json.loads(response_text)
         return details
@@ -614,7 +676,7 @@ def extract_appointment_details_for_email(conversation_history_str):
 
 # ─── Generate response from LLM with RAG and Scheduling ─────────────────────
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
-    if not AI_MODEL: 
+    if not AI_MODEL:
         return {'type': 'text', 'content': "AI Model not configured."}
 
     # --- Step 1: Intent and Filter Extraction ---
@@ -677,10 +739,10 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
     context_str = ""
     # The main condition is now broader to catch all property-related queries.
     if (intent == "property_search" or is_property_related_query(text)) and PROPERTY_SHEET_ID:
-        
+
         logging.info("Performing property database search (Google Sheets).")
         all_properties_df = property_handler.get_sheet_data()
-        
+
         if not all_properties_df.empty:
             # If specific filters were found by the AI, use them.
             if filters:
@@ -735,12 +797,12 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
         for item in history_dicts:
             role = item.get('role')
             parts = item.get('parts')
-            if role and parts and isinstance(parts, list) and parts: 
-                content = parts[0] 
+            if role and parts and isinstance(parts, list) and parts:
+                content = parts[0]
                 if role == 'user': messages.append(HumanMessage(content=content))
                 elif role in ['model', 'assistant']: messages.append(AIMessage(content=content))
     messages.append(HumanMessage(content=final_prompt_to_llm))
-    
+
     for attempt in range(retries):
         try:
             logging.info(f"Sending to LLM for final response generation (Attempt {attempt+1})")
@@ -757,11 +819,11 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
                     image_caption = image_parts[2].strip()
                     if image_url.startswith('http'):
                         return {'type': 'image', 'url': image_url, 'caption': image_caption}
-            
+
             response_text_for_display = re.sub(r'\[ACTION_SEND_IMAGE_VIA_URL\]\n.*\n.*', '', raw_llm_output).strip()
             response_text_for_display = response_text_for_display.replace("[ACTION_NOTIFY_UNANSWERED_QUERY]", "").replace("[ACTION_SEND_EMAIL_CONFIRMATION]", "").strip()
 
-            if response_text_for_display: 
+            if response_text_for_display:
                 return {'type': 'text', 'content': response_text_for_display}
 
             logging.warning(f"LLM returned an empty or token-only response on attempt {attempt+1}. Raw output: {raw_llm_output}")
@@ -772,7 +834,7 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
                 logging.error("All LLM attempts failed.", exc_info=True)
                 return {'type': 'text', 'content': "I am having trouble processing your request at the moment. Please try again shortly."}
             time.sleep((2 ** attempt) + random.uniform(0.1, 0.5))
-            
+
     return {'type': 'text', 'content': "I could not generate a response after multiple attempts."}
 
 # === APPOINTMENT SCHEDULING HANDLER (handle_appointment_scheduling) ===
@@ -784,11 +846,11 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
 def handle_appointment_scheduling(message):
     """Handle appointment scheduling requests. Interprets user input as Dubai time,
     stores events in New York time, and confirms to user in Dubai time."""
-    
-    if not CALENDAR_SERVICE: 
+
+    if not CALENDAR_SERVICE:
         return "Sorry, appointment scheduling is currently unavailable. Please contact us directly to book your appointment."
 
-    datetime_info = extract_datetime_with_ai(message) 
+    datetime_info = extract_datetime_with_ai(message)
 
     if not datetime_info or not datetime_info.get('has_datetime'):
         return (
@@ -818,7 +880,7 @@ def handle_appointment_scheduling(message):
             )
 
         appointment_time_dubai_naive = datetime.strptime(time_str, '%H:%M').time()
-        
+
         intended_start_dt_dubai_naive = datetime.combine(appointment_date_dubai_naive, appointment_time_dubai_naive)
         intended_start_dt_dubai_aware = TARGET_DISPLAY_TIMEZONE.localize(intended_start_dt_dubai_naive)
         intended_end_dt_dubai_aware = intended_start_dt_dubai_aware + timedelta(minutes=duration)
@@ -829,7 +891,7 @@ def handle_appointment_scheduling(message):
 
         event_start_dt_storage_tz_aware = intended_start_dt_dubai_aware.astimezone(EVENT_STORAGE_TIMEZONE)
         event_end_dt_storage_tz_aware = intended_end_dt_dubai_aware.astimezone(EVENT_STORAGE_TIMEZONE)
-        
+
         event_start_dt_storage_tz_naive = event_start_dt_storage_tz_aware.replace(tzinfo=None)
         event_end_dt_storage_tz_naive = event_end_dt_storage_tz_aware.replace(tzinfo=None)
 
@@ -841,7 +903,7 @@ def handle_appointment_scheduling(message):
                 f"Unfortunately, {intended_start_dt_dubai_aware.strftime('%A, %B %d at %I:%M %p %Z')} is not available. \n\n"
                 "Could you please suggest another time? I'd be happy to help you find an alternative slot."
             )
-        
+
         event_title = f"{service_type} - WhatsApp Booking"
         event_description = (
             f"Appointment scheduled via WhatsApp.\n"
@@ -849,16 +911,16 @@ def handle_appointment_scheduling(message):
             f"Duration: {duration} minutes\n"
             f"Intended time ({TARGET_DISPLAY_TIMEZONE.zone}): {intended_start_dt_dubai_aware.strftime('%Y-%m-%d %H:%M %Z')}"
         )
-        
-        test_attendee_email = None  
+
+        test_attendee_email = None
 
         created_event_api_response = create_calendar_event(
-            CALENDAR_SERVICE, 
+            CALENDAR_SERVICE,
             event_title,
-            event_start_dt_storage_tz_naive,  
-            event_end_dt_storage_tz_naive,    
+            event_start_dt_storage_tz_naive,
+            event_end_dt_storage_tz_naive,
             event_description,
-            attendee_email=test_attendee_email  
+            attendee_email=test_attendee_email
         )
 
         if created_event_api_response and created_event_api_response.get('htmlLink'):
@@ -883,13 +945,13 @@ def handle_appointment_scheduling(message):
 # === END OF APPOINTMENT SCHEDULING HANDLER ===
 
 # ─── Split long messages ──────────────────────────────────────────────────────
-def split_message(text, max_lines=2, max_chars=1000): 
+def split_message(text, max_lines=2, max_chars=1000):
     parts = text.split('\n')
     chunks = []
     current_chunk_lines = []
     current_chunk_char_count = 0
     for line in parts:
-        line_len_with_newline = len(line) + (1 if current_chunk_lines else 0) 
+        line_len_with_newline = len(line) + (1 if current_chunk_lines else 0)
         if (len(current_chunk_lines) >= max_lines or \
             current_chunk_char_count + line_len_with_newline > max_chars) and current_chunk_lines:
             chunks.append('\n'.join(current_chunk_lines))
@@ -976,12 +1038,12 @@ def webhook_google_sync():
         logging.exception(f"Error in /webhook-google-sync: {e}")
         return jsonify(error='Internal Server Error'), 500
 
+# START OF NEW handle_new_messages
 @app.route('/hook', methods=['POST'])
 def handle_new_messages():
     try:
         data = request.json or {}
         incoming_messages = data.get('messages', [])
-
         if not incoming_messages:
             return jsonify(status='success_no_messages'), 200
 
@@ -991,29 +1053,122 @@ def handle_new_messages():
 
             sender = message.get('from')
             msg_type = message.get('type')
-            
-            body = None
-            
-            # --- NEW: Logic to handle button clicks ---
-            if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply':
-                button_reply = message['reply']['buttons_reply']
-                button_id = button_reply.get('id')
-                button_title = button_reply.get('title')
-                
-                # Set the body to the button title for conversation history
-                body = button_title
-                
-                logging.info(f"User {sender} clicked button: ID='{button_id}', Title='{button_title}'")
-                # You can add specific logic here based on the button_id
-                # For now, we will let it proceed to the LLM like a regular message.
 
-            # --- Existing logic for other message types ---
+            # --- START: NEW "SELL PROPERTY" FLOW LOGIC ---
+            if sender in sell_flow_states:
+                state_info = sell_flow_states[sender]
+                current_state = state_info.get('state')
+                user_data = state_info.get('data', {})
+
+                user_reply_text = ""
+                if msg_type == 'text':
+                    user_reply_text = message.get('text', {}).get('body', '').strip()
+                elif msg_type == 'reply' and message.get('reply', {}).get('type') in ['list_reply', 'buttons_reply']:
+                    reply_data = message['reply'].get('list_reply') or message['reply'].get('buttons_reply')
+                    user_reply_text = reply_data.get('title')
+
+                if not user_reply_text:
+                    logging.info(f"Sell flow: Empty reply from {sender}, state {current_state}. Waiting for valid input.")
+                    continue
+
+                if current_state == 'awaiting_seller_name':
+                    user_data['name'] = user_reply_text
+                    sell_flow_states[sender] = {'state': 'awaiting_seller_property_type', 'data': user_data}
+                    type_list_data = {
+                        "header": "Choosing property type:",
+                        "body": "Please tell us what type of property do you want to sell?",
+                        "footer": "Select one from the list below:",
+                        "label": "Press here to select property type",
+                        "sections": [{"title": "Type of Property", "rows": [
+                            {"id": "type_villa", "title": "Villa"}, {"id": "type_apartment", "title": "Apartment"},
+                            {"id": "type_penthouse", "title": "Penthouse"}, {"id": "type_townhouse", "title": "Townhouse"},
+                            {"id": "type_other", "title": "Other"}
+                        ]}]
+                    }
+                    send_interactive_list_message(sender, type_list_data)
+
+                elif current_state == 'awaiting_seller_property_type':
+                    user_data['property_type'] = user_reply_text
+                    sell_flow_states[sender] = {'state': 'awaiting_seller_city', 'data': user_data}
+                    city_rows = [{"id": f"city_{city.lower().replace(' ', '')}", "title": city} for city in UAE_CITIES]
+                    city_list_data = {
+                        "header": "Choosing City:",
+                        "body": "In which city is your property located?",
+                        "footer": "Please select a city from the list.",
+                        "label": "Select City",
+                        "sections": [{"title": "Cities in UAE", "rows": city_rows}]
+                    }
+                    send_interactive_list_message(sender, city_list_data)
+
+                elif current_state == 'awaiting_seller_city':
+                    user_data['city'] = user_reply_text
+                    sell_flow_states[sender] = {'state': 'awaiting_seller_area', 'data': user_data}
+                    areas_for_city = UAE_AREAS.get(user_reply_text, [])
+                    if not areas_for_city:
+                        areas_for_city = ["Other"]
+
+                    area_rows = [{"id": f"area_{area.lower().replace(' ', '_')}", "title": area} for area in areas_for_city]
+                    if not any(r['title'] == 'Other' for r in area_rows) and user_reply_text in UAE_AREAS :
+                         if "Other" not in areas_for_city:
+                            area_rows.append({"id": "area_other", "title": "Other"})
+
+                    area_list_data = {
+                        "header": f"Choosing Area in {user_reply_text}:",
+                        "body": "Please select the area.",
+                        "label": "Select Area",
+                        "sections": [{"title": f"Areas in {user_reply_text}", "rows": area_rows}]
+                    }
+                    send_interactive_list_message(sender, area_list_data)
+
+                elif current_state == 'awaiting_seller_area':
+                    user_data['area'] = user_reply_text
+                    if user_data.get('property_type', '').lower() == 'apartment':
+                        sell_flow_states[sender] = {'state': 'awaiting_seller_building_name', 'data': user_data}
+                        send_whatsapp_message(sender, "Understood. What is the name of the building?")
+                    else:
+                        sell_flow_states[sender] = {'state': 'awaiting_seller_price', 'data': user_data}
+                        send_whatsapp_message(sender, "Great! What is your asking price in AED?")
+
+                elif current_state == 'awaiting_seller_building_name':
+                    user_data['building'] = user_reply_text
+                    sell_flow_states[sender] = {'state': 'awaiting_seller_price', 'data': user_data}
+                    send_whatsapp_message(sender, "Great! And what is your asking price in AED?")
+
+                elif current_state == 'awaiting_seller_price':
+                    user_data['price'] = user_reply_text
+                    user_data['phone'] = sender.split('@')[0]
+
+                    send_whatsapp_message(sender, "Thank you for all the details. Our team will review the information and get in touch with you shortly!")
+
+                    email_sent_successfully = send_property_lead_email(user_data)
+                    if email_sent_successfully:
+                        logging.info(f"Property lead email for {user_data.get('name')} sent successfully.")
+                    else:
+                        logging.error(f"Failed to send property lead email for {user_data.get('name')}.")
+
+                    del sell_flow_states[sender]
+                continue
+
+            body_for_fallback = None
+
+            if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply':
+                button_reply_data = message['reply']['buttons_reply']
+                button_id = button_reply_data.get('id')
+                button_title = button_reply_data.get('title')
+                body_for_fallback = button_title
+                logging.info(f"User {sender} clicked button: ID='{button_id}', Title='{button_title}'")
+
+                if button_id and button_id.endswith('button_1_id'):
+                    sell_flow_states[sender] = {'state': 'awaiting_seller_name', 'data': {}}
+                    send_whatsapp_message(sender, "Great! We can certainly help with that. To start, could you please tell me your full name?")
+                    continue
+
             elif msg_type == 'text':
-                body = message.get('text', {}).get('body')
+                body_for_fallback = message.get('text', {}).get('body')
             elif msg_type == 'image' or msg_type == 'video':
-                body = f"[User sent a {msg_type}]"
+                body_for_fallback = f"[User sent a {msg_type}]"
                 if message.get('media', {}).get('caption'):
-                    body += f" with caption: {message['media']['caption']}"
+                    body_for_fallback += f" with caption: {message['media']['caption']}"
             elif msg_type == 'audio':
                 media_url = message.get('media', {}).get('url')
                 if media_url and openai_client:
@@ -1023,24 +1178,27 @@ def handle_new_messages():
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_audio_file:
                             tmp_audio_file.write(audio_response.content)
                             tmp_audio_file_path = tmp_audio_file.name
-                        
+
                         transcript = openai_client.audio.transcriptions.create(
                             model="whisper-1", file=open(tmp_audio_file_path, "rb")
                         )
-                        body = transcript.text
+                        body_for_fallback = transcript.text
                         os.remove(tmp_audio_file_path)
                     except Exception as e:
                         logging.error(f"Error during audio transcription: {e}")
-                        body = "[Audio transcription failed.]"
+                        body_for_fallback = "[Audio transcription failed.]"
                 else:
-                    body = "[Audio received, but could not be transcribed.]"
+                    body_for_fallback = "[Audio received, but could not be transcribed.]"
 
-            if not (sender and body):
-                logging.warning(f"Webhook ignored: no sender or body. Message: {message}")
+            if not (sender and body_for_fallback):
+                if msg_type == 'reply' and message.get('reply', {}).get('type') == 'list_reply':
+                     logging.warning(f"Received list_reply from {sender} outside of active sell flow. Ignoring.")
+                elif not body_for_fallback:
+                     logging.warning(f"Webhook ignored: no sender or body_for_fallback. Message Type: {msg_type}, Message: {message}")
                 continue
 
-            # --- BOT COMMAND HANDLING LOGIC ---
-            normalized_body = body.lower().strip()
+            # --- FALLBACK to existing command/RAG logic ---
+            normalized_body = body_for_fallback.lower().strip()
             global is_globally_paused
 
             if normalized_body == "bot pause all":
@@ -1083,38 +1241,36 @@ def handle_new_messages():
             if normalized_body.startswith("bot start outreach"):
                 parts = normalized_body.split("bot start outreach", 1)
                 sheet_specifier = parts[1].strip() if len(parts) > 1 and parts[1].strip() else os.getenv('DEFAULT_OUTREACH_SHEET_ID')
-                
+
                 if not sheet_specifier:
                     send_whatsapp_message(sender, "Error: No Google Sheet ID was provided or found in the default environment variable.")
                     logging.warning(f"Outreach command by {sender} failed: no sheet specifier.")
                     continue
-                
+
                 parsed_sheet_id = extract_sheet_id_from_url(sheet_specifier)
                 if not parsed_sheet_id:
                     send_whatsapp_message(sender, f"Error: The provided Google Sheet specifier '{sheet_specifier}' is invalid.")
                     continue
-                
+
                 send_whatsapp_message(sender, f"Outreach campaign started using Sheet ID: {parsed_sheet_id}. You will be notified upon completion.")
                 executor.submit(process_outreach_campaign, parsed_sheet_id, sender, current_app.app_context())
                 logging.info(f"Outreach campaign submitted to executor for {sender} with Sheet ID: {parsed_sheet_id}.")
                 continue
 
-            # --- Check for Pause States ---
             if is_globally_paused:
-                logging.info(f"Bot is globally paused. Ignoring message from {sender}: {body[:100]}...")
+                logging.info(f"Bot is globally paused. Ignoring message from {sender}: {body_for_fallback[:100]}...")
                 continue
 
             if sender in paused_conversations:
-                logging.info(f"Conversation with {sender} is paused. Ignoring message: {body[:100]}...")
+                logging.info(f"Conversation with {sender} is paused. Ignoring message: {body_for_fallback[:100]}...")
                 continue
 
-            # --- Process message with AI/RAG ---
-            user_id = ''.join(c for c in sender if c.isalnum()) 
-            logging.info(f"Incoming from {sender} (UID: {user_id}): {body}")
-            
+            user_id = ''.join(c for c in sender if c.isalnum())
+            logging.info(f"Incoming from {sender} (UID: {user_id}): {body_for_fallback}")
+
             history = load_history(user_id)
-            llm_response_data = get_llm_response(body, sender, history)
-            
+            llm_response_data = get_llm_response(body_for_fallback, sender, history)
+
             final_model_response_for_history = ""
 
             if llm_response_data['type'] == 'image':
@@ -1137,34 +1293,35 @@ def handle_new_messages():
                 for idx, chunk in enumerate(chunks, start=1):
                     if not send_whatsapp_message(sender, chunk):
                         logging.error(f"Failed to send chunk {idx}/{len(chunks)} to {sender}. Aborting further sends for this message.")
-                        break 
-                    if idx < len(chunks): 
+                        break
+                    if idx < len(chunks):
                         time.sleep(random.uniform(2.0, 3.0))
             else:
                 logging.error(f"Unknown response type from get_llm_response: {llm_response_data.get('type')}")
                 final_model_response_for_history = "[Error: Unknown response type from LLM]"
                 error_message = "I'm having a bit of trouble processing that request. Could you try rephrasing?"
                 send_whatsapp_message(sender, error_message)
-                
-            new_history_user = {'role': 'user', 'parts': [body]}
+
+            new_history_user = {'role': 'user', 'parts': [body_for_fallback]}
             new_history_model = {'role': 'model', 'parts': [final_model_response_for_history]}
             history.append(new_history_user)
             history.append(new_history_model)
-            
-            MAX_HISTORY_TURNS = 10 
+
+            MAX_HISTORY_TURNS = 10
             if len(history) > MAX_HISTORY_TURNS * 2:
-                history = history[-(MAX_HISTORY_TURNS * 2):] 
-                
+                history = history[-(MAX_HISTORY_TURNS * 2):]
+
             save_history(user_id, history)
-        
+
         return jsonify(status='success'), 200
 
     except json.JSONDecodeError as je:
         logging.error(f"Webhook JSONDecodeError: {je}. Raw data: {request.data}")
         return jsonify(status='error', message='Invalid JSON payload'), 400
     except Exception as e:
-        logging.exception(f"FATAL Error in webhook processing: {e}") 
+        logging.exception(f"FATAL Error in webhook processing: {e}")
         return jsonify(status='error', message='Internal Server Error'), 500
+# END OF NEW handle_new_messages
 
 # ─── Background Task Function for Google Document Updates ──────────────────────
 def process_google_document_update(document_id, app_context):
@@ -1223,7 +1380,7 @@ def process_google_document_update(document_id, app_context):
 def is_property_related_query(text):
     """Checks if a query is generally about properties using keywords."""
     keywords = [
-        'property', 'properties', 'apartment', 'villa', 'house', 
+        'property', 'properties', 'apartment', 'villa', 'house',
         'buy', 'rent', 'lease', 'listing', 'listings', 'available', 'real estate'
     ]
     text_lower = text.lower()
@@ -1232,7 +1389,7 @@ def is_property_related_query(text):
 if __name__ == '__main__':
     # Set up webhook on startup
     set_webhook()
-    
+
     # Start the Flask app
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
