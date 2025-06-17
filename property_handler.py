@@ -11,7 +11,7 @@ SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/au
 # Expected columns in the Google Sheet.
 # IMPORTANT: Please verify these column names match the headers in your Google Sheet.
 EXPECTED_COLUMNS = [
-    'PropertyID', 'PropertyName', 'Description', 'Price_SAR', 'Guests', 'City',
+    'PropertyID', 'PropertyName', 'Description', 'WeekdayPrice', 'WeekendPrice', 'MonthlyPrice', 'Guests', 'City',
     'Neighborhood', 'Amenities', 'BookingLink', 'VideoURL', 'ImageURL1', 'ImageURL2', 'ImageURL3'
 ]
 
@@ -47,14 +47,16 @@ def get_sheet_data():
         df = pd.DataFrame(records)
 
         # --- Data Cleaning and Type Conversion ---
-        df['Price_SAR'] = pd.to_numeric(df['Price_SAR'], errors='coerce')
+        df['WeekdayPrice'] = pd.to_numeric(df['WeekdayPrice'], errors='coerce')
+        df['WeekendPrice'] = pd.to_numeric(df['WeekendPrice'], errors='coerce')
+        df['MonthlyPrice'] = pd.to_numeric(df['MonthlyPrice'], errors='coerce')
         df['Guests'] = pd.to_numeric(df['Guests'], errors='coerce')
 
         for col in EXPECTED_COLUMNS:
             if col not in df.columns:
-                df[col] = '' # Add missing columns to prevent errors
+                df[col] = pd.NA # Use pandas NA for missing columns
 
-        df.fillna('', inplace=True)
+        df.fillna(pd.NA, inplace=True)
 
         logging.info(f"Successfully loaded {len(df)} properties from sheet '{sheet_name}'.")
         return df
@@ -84,17 +86,21 @@ def filter_properties(df, filters):
             operator = details.get('operator')
             value = details.get('value')
 
-            if key in ['Price_SAR', 'Guests']:
-                value = float(value)
-                if operator == '<':
-                    filtered_df = filtered_df[filtered_df[key] <= value]
-                elif operator == '>':
-                    filtered_df = filtered_df[filtered_df[key] >= value]
-                elif operator == '=':
-                    filtered_df = filtered_df[filtered_df[key] == value]
+            if key in ['WeekdayPrice', 'WeekendPrice', 'MonthlyPrice', 'Guests']:
+                # Ensure the column exists and has numeric data before filtering
+                if pd.api.types.is_numeric_dtype(filtered_df[key]):
+                    value = float(value)
+                    if operator == '<':
+                        filtered_df = filtered_df[filtered_df[key] <= value]
+                    elif operator == '>':
+                        filtered_df = filtered_df[filtered_df[key] >= value]
+                    elif operator == '=':
+                        filtered_df = filtered_df[filtered_df[key] == value]
 
             elif key in ['City', 'Neighborhood', 'PropertyName', 'Amenities']:
-                filtered_df = filtered_df[filtered_df[key].str.contains(str(value), case=False, na=False)]
+                 # Ensure the column exists and is of string type
+                if pd.api.types.is_string_dtype(filtered_df[key]) or pd.api.types.is_object_dtype(filtered_df[key]):
+                    filtered_df = filtered_df[filtered_df[key].str.contains(str(value), case=False, na=False)]
 
         except (ValueError, TypeError) as e:
             logging.error(f"Error applying filter for key '{key}' with value '{value}': {e}")
