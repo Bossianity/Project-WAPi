@@ -125,12 +125,43 @@ def load_history(uid):
     try:
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
-        history_messages = [item for item in data if isinstance(item, dict) and 'role' in item and 'parts' in item]
-        if len(history_messages) > MAX_HISTORY_TURNS_TO_LOAD * 2:
-            return history_messages[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
-        return history_messages
+
+        langchain_history = []
+        for item in data:
+            if isinstance(item, dict) and 'role' in item:
+                message_content = ""
+                found_content = False
+
+                # 1. Check for 'content' field first
+                if isinstance(item.get('content'), str):
+                    message_content = item['content']
+                    found_content = True
+
+                # 2. Else, check for 'parts' field (backward compatibility)
+                elif 'parts' in item:
+                    if isinstance(item['parts'], list) and len(item['parts']) > 0:
+                        message_content = str(item['parts'][0]) # Ensure content is string
+                        found_content = True
+                    else:
+                        logging.warning(f"Item for {uid} has 'parts' field, but it's empty or not a list: {item}")
+
+                if not found_content:
+                    logging.warning(f"Could not find 'content' or valid 'parts' in message item for {uid}: {item}. Using empty content.")
+
+                if item['role'] == 'user':
+                    langchain_history.append(HumanMessage(content=message_content))
+                elif item['role'] == 'model': # Matching the role used in save_history
+                    langchain_history.append(AIMessage(content=message_content))
+                # Silently ignore other roles for now, or log if necessary
+            else:
+                logging.warning(f"Skipping malformed item (missing 'role' or not a dict) in history for {uid}: {item}")
+
+        # Apply MAX_HISTORY_TURNS_TO_LOAD (note: each turn is a user + model message)
+        if len(langchain_history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
+            return langchain_history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
+        return langchain_history
     except Exception as e:
-        logging.error(f"Error loading history for {uid}: {e}")
+        logging.error(f"Error loading or processing history for {uid}: {e}", exc_info=True)
         return []
 
 def save_history(uid, history):
@@ -358,8 +389,8 @@ def webhook():
                     time.sleep(1)
 
             history.extend([
-                {'role': 'user', 'parts': [body_for_fallback]},
-                {'role': 'model', 'parts': [final_model_response_for_history]}
+                {'role': 'user', 'content': body_for_fallback},
+                {'role': 'model', 'content': final_model_response_for_history}
             ])
             if len(history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
                 history = history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
