@@ -115,9 +115,6 @@ def save_history(uid, history):
     except Exception as e:
         logging.error(f"Error saving history for {uid}: {e}")
 
-# ─── RAG and other initializations ────────────────────────────────────────────────
-# (Assuming RAG, Calendar, etc., are initialized as in the original full script)
-# This part is omitted for brevity but should be present in your file.
 
 # ─── Helper Functions ───────────────────────────────────────────────────────────
 def split_message(text, max_chars=1600):
@@ -344,16 +341,26 @@ def webhook():
         return jsonify(status='error', message='Internal Server Error'), 500
 
 # ─── App Startup ──────────────────────────────────────────────────────────────
-if __name__ == '__main__':
-    # Initialize RAG components on startup
-    with app.app_context():
+# Moved RAG initialization here to run when the app is loaded by the WSGI server
+with app.app_context():
+    try:
         embeddings_rag = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=os.getenv('OPENAI_API_KEY'))
         vector_store_rag = initialize_vector_store()
         if vector_store_rag and embeddings_rag:
             app.config['EMBEDDINGS'] = embeddings_rag
             app.config['VECTOR_STORE'] = vector_store_rag
             logging.info("RAG components initialized and stored in app config.")
-    
-    set_webhook()
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+        else:
+            logging.error("Failed to initialize RAG components.")
+    except Exception as e:
+        logging.critical(f"A critical error occurred during RAG initialization: {e}")
+
+# Set the webhook once when the application starts
+set_webhook()
+
+if __name__ == '__main__':
+    # This block is for local development and debugging ONLY.
+    # It will NOT run on Render, which uses the waitress/gunicorn start command.
+    logging.warning("RUNNING IN LOCAL DEVELOPMENT MODE. DO NOT USE IN PRODUCTION.")
+    port = int(os.getenv('PORT', 5001)) # Use a different port for local testing
+    app.run(host='0.0.0.0', port=port, debug=True)
