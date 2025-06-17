@@ -20,6 +20,7 @@ import pytz
 import smtplib
 from email.mime.text import MIMEText
 import property_handler
+import threading # <-- Import the threading module
 
 # Ensure other custom modules are in the same directory or accessible via PYTHONPATH
 from rag_handler import (
@@ -341,7 +342,16 @@ def webhook():
         return jsonify(status='error', message='Internal Server Error'), 500
 
 # ─── App Startup ──────────────────────────────────────────────────────────────
-# Moved RAG initialization here to run when the app is loaded by the WSGI server
+# This function will run in a separate thread to avoid blocking the server start
+def deferred_startup():
+    # Wait a few seconds for the server to bind the port
+    time.sleep(5)
+    with app.app_context():
+        logging.info("Running deferred startup tasks...")
+        set_webhook()
+        logging.info("Deferred startup tasks completed.")
+
+# Initialize RAG components immediately, as they are needed for responses.
 with app.app_context():
     try:
         embeddings_rag = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=os.getenv('OPENAI_API_KEY'))
@@ -355,8 +365,11 @@ with app.app_context():
     except Exception as e:
         logging.critical(f"A critical error occurred during RAG initialization: {e}")
 
-# Set the webhook once when the application starts
-set_webhook()
+# Start the deferred startup tasks in a background thread
+# This ensures the server starts immediately and the port is bound.
+startup_thread = threading.Thread(target=deferred_startup)
+startup_thread.daemon = True
+startup_thread.start()
 
 if __name__ == '__main__':
     # This block is for local development and debugging ONLY.
