@@ -273,6 +273,11 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
 
     return {'type': 'text', 'content': "I could not generate a response after multiple attempts."}
 
+# ─── Health Check Endpoint ─────────────────────────────────────────────────────
+@app.route('/', methods=['GET'])
+def health_check():
+    return jsonify(status="healthy", message="Application is running."), 200
+
 # ─── Main Webhook Handler ──────────────────────────────────────────────────────
 @app.route('/hook', methods=['POST'])
 def webhook():
