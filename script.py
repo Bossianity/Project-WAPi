@@ -74,8 +74,8 @@ paused_conversations = set()
 PERSONA_NAME = "مساعد"
 
 BASE_PROMPT = (
-    "You are مساعد (or mosaed when the customer is speaking to you in english), the AI assistant for العوجا للتأجير اليومي (or alouja bnb services if the client is speaking in english), operating on WhatsApp. Your role is to handle all pre-booking communication in a smart way, if they try to test your intelligence by asking deep questions or whether you are a bot or not and so on reply intelligently even if the information is not provided in the context. "
-    "Your tone is semi-friendly and professional — warm but not exaggerated. Use natural Saudi phrases like 'حياك الله' or 'بخدمتك'. Also sometimes the clients try to be cheeky, if they ask you cheeky question to test your intelligence reply intelligently even if the answer is not in the provided concept. Make sure that this does not conflict with data in the context. "
+    "You are مساعد, the AI assistant for العوجا للتأجير اليومي, operating on WhatsApp. Your role is to handle all pre-booking communication. "
+    "Your tone is semi-friendly and professional — warm but not exaggerated. Use natural Saudi phrases like 'حياك الله' or 'بخدمتك'. "
     
     "CRITICAL LANGUAGE RULE: Always reply in the SAME language used by the user in their last message. If the user writes in Arabic, reply in a professional Saudi dialect. If in English, reply in English. Failure to follow this is a critical failure."
     
@@ -324,6 +324,75 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
 @app.route('/', methods=['GET'])
 def health_check():
     return jsonify(status="healthy", message="Application is running."), 200
+
+# ─── Google Docs Sync Webhook ──────────────────────────────────────────────────
+@app.route('/webhook-google-sync', methods=['POST'])
+def google_docs_webhook_sync():
+    data = request.get_json()
+    if not data:
+        logging.error("Google Docs sync: No data received.")
+        return jsonify(status="error", message="No data received"), 400
+
+    logging.info(f"Google Docs sync: Received request data: {json.dumps(data)}")
+
+    # --- Secret Token Validation ---
+    EXPECTED_GOOGLE_TOKEN = os.getenv('GOOGLE_SYNC_SECRET_TOKEN')
+    received_token = data.get('secretToken')
+
+    if not EXPECTED_GOOGLE_TOKEN:
+        logging.critical("Google Docs sync: GOOGLE_SYNC_SECRET_TOKEN is not set in environment. Cannot authenticate requests.")
+        return jsonify(status="error", message="Authentication service not configured."), 500
+
+    if not received_token or received_token != EXPECTED_GOOGLE_TOKEN:
+        logging.warning(f"Google Docs sync: Unauthorized access attempt. Received token: '{received_token}'")
+        return jsonify(status="error", message="Unauthorized: Invalid or missing secret token"), 401
+
+    document_id = data.get('documentId')
+    if not document_id:
+        logging.error(f"Google Docs sync: 'documentId' missing from request after token validation: {json.dumps(data)}")
+        return jsonify(status="error", message="'documentId' is required"), 400
+
+    logging.info(f"Google Docs sync: Authorized request for documentId: {document_id}")
+
+    # --- RAG Processing Logic ---
+    try:
+        vector_store = current_app.config.get('VECTOR_STORE')
+        embeddings = current_app.config.get('EMBEDDINGS')
+
+        if not vector_store or not embeddings:
+            logging.critical("Google Docs sync: RAG components (vector store or embeddings) not found in app config.")
+            return jsonify(status="error", message="RAG system not configured properly."), 500
+
+        # 1. Fetch Google Doc content
+        logging.info(f"Google Docs sync: Fetching content for documentId: {document_id}")
+        text_content = get_google_doc_content(document_id)
+
+        if text_content is None:
+            logging.error(f"Google Docs sync: Failed to fetch content for documentId: {document_id}. get_google_doc_content returned None.")
+            return jsonify(status="error", message=f"Failed to fetch content for document {document_id}."), 500
+
+        # If content is empty string, it might be an empty doc, which is fine.
+        logging.info(f"Google Docs sync: Successfully fetched content for documentId: {document_id}. Content length: {len(text_content)}")
+
+        # 2. Process and sync the document text with the RAG system
+        logging.info(f"Google Docs sync: Processing documentId: {document_id} with RAG system.")
+        sync_success = process_google_document_text(
+            document_id=document_id,
+            text_content=text_content,
+            vector_store=vector_store,
+            embeddings=embeddings
+        )
+
+        if sync_success:
+            logging.info(f"Google Docs sync: Successfully processed and synced documentId: {document_id}")
+            return jsonify(status="success", message=f"Document {document_id} processed and synced."), 200
+        else:
+            logging.error(f"Google Docs sync: Failed to process/sync documentId: {document_id} using process_google_document_text.")
+            return jsonify(status="error", message=f"Failed to process/sync document {document_id}."), 500
+
+    except Exception as e:
+        logging.exception(f"Google Docs sync: An unexpected error occurred while processing documentId: {document_id}: {e}")
+        return jsonify(status="error", message=f"An unexpected error occurred while processing document {document_id}."), 500
 
 # ─── Main Webhook Handler ──────────────────────────────────────────────────────
 @app.route('/hook', methods=['POST'])
