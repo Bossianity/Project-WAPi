@@ -42,6 +42,26 @@ from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, s
 
 # ─── Load Environment and Configuration ──────────────────────────────────────
 load_dotenv()
+
+# --- Environment Variable Check ---
+CRITICAL_ENV_VARS = [
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "API_URL",        # For Whapi
+    "API_TOKEN",      # For Whapi
+    "BOT_URL",
+    "PROPERTY_SHEET_ID",
+    "PROPERTY_SHEET_NAME"
+]
+
+logging.info("Performing critical environment variable check...")
+for var_name in CRITICAL_ENV_VARS:
+    if os.getenv(var_name):
+        logging.info(f"Environment Variable Check: {var_name} - Set")
+    else:
+        logging.warning(f"Environment Variable Check: {var_name} - Not Set")
+# --- End Environment Variable Check ---
+
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 PROPERTY_SHEET_ID = os.getenv('PROPERTY_SHEET_ID')
 PROPERTY_SHEET_NAME = os.getenv('PROPERTY_SHEET_NAME', 'Properties')
@@ -78,9 +98,14 @@ BASE_PROMPT = (
 # ─── AI Model and API Client Initialization ────────────────────────────────────
 AI_MODEL = None
 if OPENAI_API_KEY:
-    AI_MODEL = ChatOpenAI(model_name='gpt-4o', openai_api_key=OPENAI_API_KEY, temperature=0.1)
+    try:
+        AI_MODEL = ChatOpenAI(model_name='gpt-4o', openai_api_key=OPENAI_API_KEY, temperature=0.1)
+        logging.info("ChatOpenAI model initialized successfully.")
+    except Exception as e:
+        logging.error(f"Failed to initialize ChatOpenAI model: {e}", exc_info=True)
+        AI_MODEL = None # Ensure AI_MODEL is None if initialization failed
 else:
-    logging.error("OPENAI_API_KEY not found; AI responses will fail.")
+    logging.error("OPENAI_API_KEY not found; AI responses will fail. ChatOpenAI model not initialized.")
 
 # ─── Flask setup ───────────────────────────────────────────────────────────────
 app = Flask(__name__)

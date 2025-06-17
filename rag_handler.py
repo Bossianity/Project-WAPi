@@ -31,10 +31,27 @@ def initialize_vector_store():
         logging.error("GEMINI_API_KEY environment variable not set. Cannot initialize vector store.")
         return None
 
-    try:
-        embeddings_object = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME, google_api_key=gemini_api_key_local)
-    except Exception as e:
-        logging.error(f"Failed to initialize GoogleGenerativeAIEmbeddings: {e}", exc_info=True)
+    embeddings_object = None
+    max_retries = 3
+    retry_delay = 1  # Initial delay in seconds
+
+    for attempt in range(max_retries):
+        try:
+            embeddings_object = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME, google_api_key=gemini_api_key_local)
+            logging.info("GoogleGenerativeAIEmbeddings initialized successfully.")
+            break  # Exit loop if successful
+        except google.api_core.exceptions.GoogleAPIError as e:
+            logging.warning(f"Attempt {attempt + 1}/{max_retries} failed to initialize GoogleGenerativeAIEmbeddings (API Error): {e}. Retrying in {retry_delay} seconds...")
+            time.sleep(retry_delay)
+            retry_delay *= 2  # Exponential backoff
+        except Exception as e:
+            # Catch any other unexpected errors during initialization
+            logging.error(f"Attempt {attempt + 1}/{max_retries} encountered an unexpected error during GoogleGenerativeAIEmbeddings initialization: {e}", exc_info=True)
+            time.sleep(retry_delay)
+            retry_delay *= 2 # Exponential backoff
+
+    if embeddings_object is None:
+        logging.critical("Failed to initialize GoogleGenerativeAIEmbeddings after %s retries. RAG functionality will be unavailable.", max_retries)
         return None
 
     # Logic for forcing a re-index remains the same
