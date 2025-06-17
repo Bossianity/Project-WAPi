@@ -160,17 +160,33 @@ def load_history(uid):
         if len(langchain_history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
             return langchain_history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
         return langchain_history
+    except json.JSONDecodeError as jde:
+        logging.error(f"Corrupted history file for {uid}: {jde}. Starting with fresh history.", exc_info=True)
+        return []
     except Exception as e:
         logging.error(f"Error loading or processing history for {uid}: {e}", exc_info=True)
         return []
 
 def save_history(uid, history):
     path = os.path.join(CONV_DIR, f"{uid}.json")
+    serializable_history = []
+    for msg in history:
+        if isinstance(msg, HumanMessage):
+            serializable_history.append({'role': 'user', 'content': msg.content})
+        elif isinstance(msg, AIMessage):
+            serializable_history.append({'role': 'model', 'content': msg.content})
+        elif isinstance(msg, SystemMessage): # Though not explicitly added in webhook, good to handle
+            serializable_history.append({'role': 'system', 'content': msg.content})
+        elif isinstance(msg, dict) and 'role' in msg and 'content' in msg:
+            serializable_history.append(msg) # Already in correct dict format
+        else:
+            logging.warning(f"Skipping unknown message type in history for {uid} during save: {type(msg)}")
+
     try:
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
+            json.dump(serializable_history, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        logging.error(f"Error saving history for {uid}: {e}")
+        logging.error(f"Error saving history for {uid}: {e}", exc_info=True)
 
 
 # ─── Helper Functions ───────────────────────────────────────────────────────────
@@ -388,10 +404,10 @@ def webhook():
                     send_whatsapp_message(sender, chunk)
                     time.sleep(1)
 
-            history.extend([
-                {'role': 'user', 'content': body_for_fallback},
-                {'role': 'model', 'content': final_model_response_for_history}
-            ])
+            # Append as Langchain message objects
+            history.append(HumanMessage(content=body_for_fallback))
+            history.append(AIMessage(content=final_model_response_for_history))
+
             if len(history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
                 history = history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
             save_history(user_id, history)
