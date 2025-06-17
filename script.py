@@ -21,7 +21,7 @@ import smtplib
 from email.mime.text import MIMEText
 import property_handler
 
-# Ensure rag_handler.py is in the same directory or accessible via PYTHONPATH
+# Ensure other custom modules are in the same directory or accessible via PYTHONPATH
 from rag_handler import (
     initialize_vector_store,
     process_document,
@@ -36,529 +36,60 @@ from google_drive_handler import (
     get_google_sheet_content
 )
 from outreach_handler import process_outreach_campaign
-# send_interactive_list_message is added to this import
 from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, set_webhook, send_interactive_list_message
 
 
-# ─── Data Ingestion Configuration ──────────────────────────────────────────────
-COMPANY_DATA_FOLDER = 'company_data'
-
-# New, simple state tracker for the sell property flow
-sell_flow_states = {}
-
-# Hardcoded data for UAE cities and areas for the list messages
-UAE_CITIES = ["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "Ras Al Khaimah", "Fujairah", "Umm Al Quwain"]
-UAE_AREAS = {
-    "Dubai": ["Dubai Marina", "Downtown Dubai", "Palm Jumeirah", "JVC", "Business Bay", "Arabian Ranches", "Other"],
-    "Abu Dhabi": ["Al Reem Island", "Saadiyat Island", "Yas Island", "Khalifa City", "Al Raha Beach", "Other"],
-    "Sharjah": ["Al Majaz", "Al Nahda", "Muwaileh", "Al Khan", "Other"],
-    "Ajman": ["Al Rashidiya", "Ajman Downtown", "Al Jurf", "Other"],
-    "Ras Al Khaimah": ["Al Hamra Village", "Mina Al Arab", "Al Marjan Island", "Other"],
-    "Fujairah": ["Fujairah City", "Dibba", "Other"],
-    "Umm Al Quwain": ["Umm Al Quwain City", "Al Salamah", "Other"]
-}
-
-# ─── Google Calendar Configuration ─────────────────────────────────────────────
-SCOPES = ['https://www.googleapis.com/auth/calendar']
-
-# === NEW TIMEZONE STRATEGY ===
-# Timezone for user interaction, AI interpretation, and display
-TARGET_DISPLAY_TIMEZONE = pytz.timezone('Asia/Dubai')
-# Timezone for storing events in Google Calendar (workaround)
-EVENT_STORAGE_TIMEZONE = pytz.timezone('America/New_York')
-# Global TIMEZONE used by create_calendar_event and check_availability for localizing naive datetimes
-TIMEZONE = EVENT_STORAGE_TIMEZONE # This is now New York
-# ==============================
-
-# --- Operational Hours Configuration (Asia/Dubai timezone) ---
-OPERATIONAL_START_HOUR_DUBAI = 20 # 8 PM
-OPERATIONAL_END_HOUR_DUBAI = 8    # 8 AM
-DUBAI_TIMEZONE = pytz.timezone('Asia/Dubai') # This is the same as TARGET_DISPLAY_TIMEZONE, defined for clarity here
-
-# ─── Load environment and configure AI ─────────────────────────────────────────
+# ─── Load Environment and Configuration ──────────────────────────────────────
 load_dotenv()
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 PROPERTY_SHEET_ID = os.getenv('PROPERTY_SHEET_ID')
 PROPERTY_SHEET_NAME = os.getenv('PROPERTY_SHEET_NAME', 'Properties')
 
 # --- Global Pause Feature ---
-# These variables are in-memory and will be reset if the Flask app restarts or is redeployed.
 is_globally_paused = False
 paused_conversations = set()
 
-# ─── Persona loading ───────────────────────────────────────────────────────────
-PERSONA_FILE = 'persona.json'
-PERSONA_NAME = "Emran"
+# ─── Persona and AI Prompt Configuration ──────────────────────────────────
+PERSONA_NAME = "مساعد"
 
 BASE_PROMPT = (
-    "You are Emran, a seasoned real estate sales agent. Your tone is professional, convincing, and direct. You are a businessman focused on closing deals and providing accurate information. Your responses are clear, concise, and to the point. You do not use emojis or other informalities."
-    "CRITICAL LANGUAGE RULE: Your response MUST ALWAYS be in the SAME language as the user's last message. If the user messages in English, you reply in English. If they message in Arabic, you MUST reply in Emirati dialect."
-    "Failure to adhere to this language rule is a critical failure."
-    "YOUR RESPONSES MUST BE GROUNDED ON THE CONTEXT PROVIDED. Do not invent details about properties (prices, features, availability) that are not present in the 'Relevant Information Found'. Your goal is to answer the user's query using the provided context. If the context does not sufficiently answer the query about a factual aspect of a property, state that you will check for that specific detail and get back to them. In this situation, append the exact string `[ACTION_NOTIFY_UNANSWERED_QUERY]` to the end of your response."
-    "You should be persuasive and look for opportunities to upsell or highlight the value of a property, but without sounding needy. You are an expert, not just a salesperson."
-    "You understand context from recent messages. If a user has provided information, do not ask for it again."
-    "When starting a new conversation, begin with a direct greeting: 'This is Emran from [Your Business Name]. How may I assist you with your property inquiry?' Adapt this to the user's language."
-    "If a user wants to schedule a viewing, gather the necessary details: their full name, preferred date and time, and the property of interest (if not already clear). Once you have these details, confirm by stating: 'Thank you. I have your details. A member of our team will contact you shortly to confirm your viewing appointment.' Then, append the exact string `[ACTION_SEND_EMAIL_CONFIRMATION]` to the very end of your response."
-    "TEXT STYLING (CRUCIAL): Absolutely NO emojis, asterisks (*), or any other markdown syntax should be used. Your responses must be plain text. Perform a final check to ensure no such characters are present before sending."
-    "LANGUAGE & DIALECT: Assist the client in any language. If the client uses Arabic, you MUST switch to a professional Emirati dialect (e.g., 'مرحباً، وياك عمران بخصوص العقارات', 'البيانات المطلوبة هي', 'سيتم التواصل معاك قريباً')."
-    "HANDLING RETRIEVED INFORMATION (RAG CONTEXT): When 'Relevant Information Found' is provided, you MUST carefully review all snippets. Synthesize the information to formulate a comprehensive and direct answer. Do not reproduce the original formatting of the source data. Your final response must be clean, natural language."
-    "END OF CONVERSATION: You do not always need to end with a question or an offer for more help. Sometimes, simply providing the answer is sufficient. Be efficient."
-    "IMAGE SENDING TASK: If an 'IMAGE_ENTRY' in the 'Relevant Information Found' is relevant to the user's query, you MUST respond with the strict 3-line format: \n[ACTION_SEND_IMAGE_VIA_URL]\nThe_ImageURL_from_the_IMAGE_ENTRY\nThe_Caption_from_the_IMAGE_ENTRY\nWhen you use this format, no other text should precede or follow it."
-)
+    "You are مساعد, the AI assistant for العوجا للتأجير اليومي, operating on WhatsApp. Your role is to handle all pre-booking communication. "
+    "Your tone is semi-friendly and professional — warm but not exaggerated. Use natural Saudi phrases like 'حياك الله' or 'بخدمتك'. "
+    
+    "CRITICAL LANGUAGE RULE: Always reply in the SAME language used by the user in their last message. If the user writes in Arabic, reply in a professional Saudi dialect. If in English, reply in English. Failure to follow this is a critical failure."
+    
+    "CONTEXT AWARENESS: You have access to property details and prices, but NOT real-time availability. You must remember the entire conversation and not ask for details already provided. If availability is unclear for a request, state that you will check and get back to them, then append [ACTION_NOTIFY_UNANSWERED_QUERY]."
 
-try:
-    with open(PERSONA_FILE) as f:
-        p = json.load(f)
-        # PERSONA_NAME = p.get('name', PERSONA_NAME) # Commented out to ensure "Layla" is used from script
-        pass # persona.json is not used to override Layla's name defined in BASE_PROMPT
-    logging.info(f"Persona name is '{PERSONA_NAME}'. System prompt is now controlled by script.py's BASE_PROMPT.")
-except Exception as e:
-    logging.warning(f"Could not load {PERSONA_FILE} or parse 'name': {e}. Using default name '{PERSONA_NAME}'. System prompt is controlled by script.py's BASE_PROMPT.")
+    "BOOKING WORKFLOW: If a user expresses interest in booking, collect these 3 things if not already known: the specific property, check-in/check-out dates, and number of guests. "
+    "Once you have these, say: 'Thank you. I have your details for the booking. Our team will verify the availability and contact you shortly to confirm.' Then append [ACTION_CONFIRM_BOOKING_DETAILS] to the very end of your response."
+    
+    "START OF CONVERSATION: Always begin with: 'This is مساعد from العوجا للتأجير اليومي. How may I assist you?' or the Arabic equivalent based on the user’s language."
+
+    "HANDLING RETRIEVED INFORMATION (RAG CONTEXT): When 'Relevant Information Found' is available, you must read and synthesize the snippets to craft a direct and helpful response. Use natural language only. Your goal is to encourage booking by highlighting unique features and value without inventing any details."
+
+    "MEDIA HANDLING:"
+    "1. IMAGE GALLERY TASK: If the context contains an `[ACTION_SEND_IMAGE_GALLERY]` block AND the user explicitly asks for images, pictures, or photos, your entire response MUST be ONLY that block. Do not add any other text."
+    "2. VIDEO LINK TASK: If the context contains a `[VIDEO_LINK]` and the user asks for a video or tour, you should incorporate this link naturally into your text response. For example: 'You can watch a video tour of the property here: [video link]'."
+
+    "TEXT RULES: No emojis, no markdown (*, _, etc.). Use only clean plain text."
+)
 
 # ─── AI Model and API Client Initialization ────────────────────────────────────
 AI_MODEL = None
 if OPENAI_API_KEY:
-    AI_MODEL = ChatOpenAI(model_name='gpt-4o', openai_api_key=OPENAI_API_KEY, temperature=0)
+    AI_MODEL = ChatOpenAI(model_name='gpt-4o', openai_api_key=OPENAI_API_KEY, temperature=0.1)
 else:
     logging.error("OPENAI_API_KEY not found; AI responses will fail.")
-
-if OPENAI_API_KEY:
-    openai_client = OpenAI(api_key=OPENAI_API_KEY)
-else:
-    openai_client = None
-
-# HTTP_SESSION for WaSender is now managed in whatsapp_utils.py
-# HTTP_SESSION = requests.Session() # Removed
 
 # ─── Flask setup ───────────────────────────────────────────────────────────────
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Initialize ThreadPoolExecutor
-# max_workers can be adjusted based on expected load and server resources.
-# For I/O bound tasks like calling external APIs (which RAG processing might do),
-# a higher number of workers might be beneficial. Let's start with 2.
 executor = ThreadPoolExecutor(max_workers=2)
-
-# ─── Google Calendar Setup ─────────────────────────────────────────────────────
-def get_calendar_service():
-    """Get Google Calendar service object using service account credentials."""
-    try:
-        credentials_json = os.getenv('GOOGLE_CALENDAR_CREDENTIALS')
-        if not credentials_json:
-            logging.error("GOOGLE_CALENDAR_CREDENTIALS environment variable not found")
-            return None
-
-        credentials_info = json.loads(credentials_json)
-        credentials = service_account.Credentials.from_service_account_info(
-            credentials_info,
-            scopes=SCOPES
-        )
-        service = build('calendar', 'v3', credentials=credentials)
-        return service
-
-    except Exception as e:
-        logging.error(f"Error initializing calendar service: {e}")
-        return None
-
-# ─── Appointment Intent Detection and Extraction ───────────────────────────────
-def detect_scheduling_intent(message):
-    """Detect if the message contains scheduling intent."""
-    scheduling_keywords = [
-        'appointment', 'schedule', 'book', 'booking', 'meeting', 'consultation',
-        'reserve', 'reservation', 'visit', 'session', 'call', 'meet'
-    ]
-
-    time_indicators = [
-        'today', 'tomorrow', 'next week', 'monday', 'tuesday', 'wednesday', 'thursday',
-        'friday', 'saturday', 'sunday', 'am', 'pm', 'morning', 'afternoon', 'evening',
-        'at', 'on', 'o\'clock', ':', 'time'
-    ]
-
-    message_lower = message.lower()
-
-    has_scheduling_keyword = any(keyword in message_lower for keyword in scheduling_keywords)
-    has_time_indicator = any(indicator in message_lower for indicator in time_indicators)
-
-    date_patterns = [
-        r'\d{1,2}[/-]\d{1,2}',
-        r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}',
-        r'\b\d{1,2}(st|nd|rd|th)\b',
-    ]
-
-    has_date_pattern = any(re.search(pattern, message_lower) for pattern in date_patterns)
-    return has_scheduling_keyword or (has_time_indicator and has_date_pattern)
-
-# === DATETIME EXTRACTION FUNCTION (extract_datetime_with_ai) ===
-def extract_datetime_with_ai(message):
-    """Use AI to extract and normalize datetime information from natural language, assuming Dubai time."""
-    current_display_time = datetime.now(TARGET_DISPLAY_TIMEZONE)
-
-    extraction_prompt = f"""
-    Extract date and time information from this message: "{message}"
-
-    Current date and time in Dubai: {current_display_time.strftime('%Y-%m-%d %H:%M')} ({TARGET_DISPLAY_TIMEZONE.zone} timezone)
-
-    Please respond with ONLY a JSON object in this exact format:
-    {{
-        "has_datetime": true/false,
-        "date": "YYYY-MM-DD" or null,
-        "time": "HH:MM" or null,
-        "duration_minutes": number or 60,
-        "service_type": "extracted service name" or "General Consultation",
-        "confidence": 0.0-1.0
-    }}
-
-    Rules:
-    - If no specific date is mentioned but "today" is implied, use today's date in Dubai timezone ({TARGET_DISPLAY_TIMEZONE.zone})
-    - If "tomorrow" is mentioned, use tomorrow's date in Dubai timezone ({TARGET_DISPLAY_TIMEZONE.zone})
-    - If a day of the week is mentioned without a date, use the next occurrence of that day
-    - If no time is specified, return null for time
-    - Default duration is 60 minutes unless specified
-    - Extract any service type mentioned (consultation, meeting, checkup, etc.)
-    - Confidence should reflect how certain you are about the extraction
-    - All dates and times extracted should be interpreted as local time for {TARGET_DISPLAY_TIMEZONE.zone}
-    """
-
-    try:
-        if not AI_MODEL:
-            logging.error("AI_MODEL not initialized in extract_datetime_with_ai")
-            return None
-
-        response = AI_MODEL.invoke(extraction_prompt)
-        response_text = response.content.strip()
-
-        if '```json' in response_text:
-            response_text = response_text.split('```json')[1].split('```')[0].strip()
-        elif '```' in response_text:
-            response_text = response_text.split('```')[1].split('```')[0].strip()
-
-        result = json.loads(response_text)
-        logging.info(f"AI extracted datetime (interpreted as Dubai time): {result}")
-        return result
-
-    except Exception as e:
-        logging.error(f"Error extracting datetime with AI: {e}")
-        return None
-# === END OF DATETIME EXTRACTION FUNCTION ===
-
-# === CALENDAR EVENT CREATION FUNCTION (create_calendar_event) ===
-def create_calendar_event(gcal_service, title, start_datetime_naive_event_tz, end_datetime_naive_event_tz, description="", attendee_email=None):
-    """
-    Create a Google Calendar event.
-    Receives naive datetimes assumed to be in EVENT_STORAGE_TIMEZONE (e.g., New York).
-    Localizes them to EVENT_STORAGE_TIMEZONE and creates the event in that timezone.
-    """
-    logging.info("CALENDAR_DEBUG: create_calendar_event called with title: %s, start_naive_event_tz: %s", title, start_datetime_naive_event_tz)
-    try:
-        if gcal_service is None:
-            logging.error("Google Calendar service is not initialized. Cannot create event.")
-            return None
-
-        # Localize naive datetimes to EVENT_STORAGE_TIMEZONE (e.g., New York)
-        if start_datetime_naive_event_tz.tzinfo is None:
-            start_datetime_event_tz_aware = TIMEZONE.localize(start_datetime_naive_event_tz)
-        else:
-            logging.warning("create_calendar_event received an already aware start_datetime. Converting to EVENT_STORAGE_TIMEZONE.")
-            start_datetime_event_tz_aware = start_datetime_naive_event_tz.astimezone(TIMEZONE)
-
-        if end_datetime_naive_event_tz.tzinfo is None:
-            end_datetime_event_tz_aware = TIMEZONE.localize(end_datetime_naive_event_tz)
-        else:
-            logging.warning("create_calendar_event received an already aware end_datetime. Converting to EVENT_STORAGE_TIMEZONE.")
-            end_datetime_event_tz_aware = end_datetime_naive_event_tz.astimezone(TIMEZONE)
-
-        logging.info(f"Creating event with {TIMEZONE.zone} times - Start: {start_datetime_event_tz_aware}, End: {end_datetime_event_tz_aware}")
-
-        event_body = {
-            'summary': title,
-            'description': description,
-            'start': {
-                'dateTime': start_datetime_event_tz_aware.isoformat(),
-                'timeZone': TIMEZONE.zone,
-            },
-            'end': {
-                'dateTime': end_datetime_event_tz_aware.isoformat(),
-                'timeZone': TIMEZONE.zone,
-            },
-            'reminders': {
-                'useDefault': False,
-                'overrides': [
-                    {'method': 'email', 'minutes': 24 * 60},
-                    {'method': 'popup', 'minutes': 10},
-                ],
-            },
-        }
-
-        if attendee_email:
-            event_body['attendees'] = [{'email': attendee_email}]
-
-        logging.info(f"Creating calendar event with payload: {json.dumps(event_body, indent=2)}")
-        # Assuming 'mohomer12@gmail.com' is the target calendar ID
-        created_event_response = gcal_service.events().insert(calendarId='mohomer12@gmail.com', body=event_body).execute()
-
-        if created_event_response and created_event_response.get('id'):
-            logging.info(f"CALENDAR_DEBUG: Event insertion successful. Event ID: {created_event_response.get('id')}, HTML Link: {created_event_response.get('htmlLink')}")
-        else:
-            logging.error(f"CALENDAR_DEBUG: Event insertion FAILED or returned unexpected response. Response: {created_event_response}")
-
-        logging.info(f"Event supposedly created. Raw Google API response: {json.dumps(created_event_response, indent=2)}")
-
-        if created_event_response and created_event_response.get('id'):
-            event_id_to_check = created_event_response.get('id')
-            logging.info(f"DIAGNOSTIC: Attempting to retrieve event with ID '{event_id_to_check}' from calendar 'mohomer12@gmail.com' immediately.")
-            try:
-                retrieved_event_check = gcal_service.events().get(calendarId='mohomer12@gmail.com', eventId=event_id_to_check).execute()
-                logging.info(f"DIAGNOSTIC SUCCESS: Successfully retrieved event by ID. Summary: '{retrieved_event_check.get('summary')}', Link: '{retrieved_event_check.get('htmlLink')}'")
-                logging.info(f"DIAGNOSTIC SUCCESS: Retrieved event details: {json.dumps(retrieved_event_check, indent=2)}")
-            except Exception as e_get:
-                logging.error(f"DIAGNOSTIC CRITICAL: FAILED to retrieve event by ID '{event_id_to_check}' from calendar 'mohomer12@gmail.com' immediately after creation. Error: {e_get}")
-        else:
-            logging.warning("DIAGNOSTIC: Created event object is missing or does not have an ID. Cannot attempt to retrieve by ID.")
-
-        return created_event_response
-
-    except Exception as e:
-        logging.error(f"Error creating calendar event: {e}", exc_info=True)
-        return None
-# === END OF CALENDAR EVENT CREATION FUNCTION ===
-
-# === CALENDAR AVAILABILITY CHECK FUNCTION (check_availability) ===
-def check_availability(gcal_service, start_datetime_naive_event_tz, end_datetime_naive_event_tz):
-    """
-    Check if the requested time slot is available.
-    Receives naive datetimes assumed to be in EVENT_STORAGE_TIMEZONE (e.g., New York).
-    Localizes them, then converts to UTC for the API call.
-    """
-    try:
-        if gcal_service is None:
-            logging.error("Google Calendar service is not initialized. Cannot check availability.")
-            return False # Assume not available if service is down
-
-        if start_datetime_naive_event_tz.tzinfo is None:
-            start_datetime_event_tz_aware = TIMEZONE.localize(start_datetime_naive_event_tz)
-        else:
-            start_datetime_event_tz_aware = start_datetime_naive_event_tz.astimezone(TIMEZONE)
-
-        if end_datetime_naive_event_tz.tzinfo is None:
-            end_datetime_event_tz_aware = TIMEZONE.localize(end_datetime_naive_event_tz)
-        else:
-            end_datetime_event_tz_aware = end_datetime_naive_event_tz.astimezone(TIMEZONE)
-
-        start_utc = start_datetime_event_tz_aware.astimezone(pytz.UTC)
-        end_utc = end_datetime_event_tz_aware.astimezone(pytz.UTC)
-
-        logging.info(f"Checking availability - {TIMEZONE.zone} times: {start_datetime_event_tz_aware} to {end_datetime_event_tz_aware}")
-        logging.info(f"Checking availability - UTC times for API: {start_utc.isoformat()} to {end_utc.isoformat()}")
-
-        events_result = gcal_service.events().list(
-            calendarId='mohomer12@gmail.com', # Assuming 'mohomer12@gmail.com'
-            timeMin=start_utc.isoformat(),
-            timeMax=end_utc.isoformat(),
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-
-        events = events_result.get('items', [])
-        logging.info(f"Found {len(events)} existing events in the time slot (checked using {TIMEZONE.zone} converted to UTC)")
-        return len(events) == 0
-
-    except Exception as e:
-        logging.error(f"Error checking availability: {e}", exc_info=True)
-        return False
-# === END OF CALENDAR AVAILABILITY CHECK FUNCTION ===
-
-# ─── Data Ingestion Function ───────────────────────────────────────────────────
-def scan_company_data_folder(vector_store: object, embeddings: object):
-    logging.info(f"Starting scan of company data folder: {COMPANY_DATA_FOLDER}")
-    if not vector_store or not embeddings:
-        logging.error("scan_company_data_folder: Vector store or embeddings not initialized. Aborting scan.")
-        return
-    if not os.path.exists(COMPANY_DATA_FOLDER) or not os.path.isdir(COMPANY_DATA_FOLDER):
-        logging.error(f"scan_company_data_folder: Company data folder '{COMPANY_DATA_FOLDER}' not found or is not a directory. Aborting scan.")
-        return
-    processed_log = get_processed_files_log()
-    current_file_paths_in_folder = []
-    try:
-        for filename in os.listdir(COMPANY_DATA_FOLDER):
-            full_path = os.path.join(COMPANY_DATA_FOLDER, filename)
-            if os.path.isfile(full_path):
-                if filename.endswith(('.txt', '.pdf')) and not filename.startswith('.'):
-                    current_file_paths_in_folder.append(full_path)
-                elif not filename.startswith('.'):
-                    logging.debug(f"scan_company_data_folder: Skipping unsupported file type or hidden file: {filename}")
-    except Exception as e:
-        logging.error(f"scan_company_data_folder: Error listing files in {COMPANY_DATA_FOLDER}: {e}", exc_info=True)
-        return
-    for file_path in current_file_paths_in_folder:
-        try:
-            file_mtime = os.path.getmtime(file_path)
-            file_info = processed_log.get(file_path)
-            if file_info and file_info.get('mtime') == file_mtime and file_info.get('status') == 'processed':
-                logging.debug(f"scan_company_data_folder: File '{file_path}' is unchanged and already processed. Skipping.")
-                continue
-            logging.info(f"scan_company_data_folder: Processing new or modified file: {file_path}")
-            process_document(file_path, vector_store, embeddings)
-        except FileNotFoundError:
-            logging.warning(f"scan_company_data_folder: File '{file_path}' found during scan but disappeared before processing. Skipping.")
-        except Exception as e:
-            logging.error(f"scan_company_data_folder: Error processing file '{file_path}': {e}", exc_info=True)
-    logged_file_paths = list(processed_log.keys())
-    for file_path in logged_file_paths:
-        if file_path.startswith(os.path.abspath(COMPANY_DATA_FOLDER) + os.sep):
-            if file_path not in current_file_paths_in_folder and processed_log.get(file_path, {}).get('status') == 'processed':
-                logging.info(f"scan_company_data_folder: File '{file_path}' appears to be removed from source folder.")
-                remove_document_from_store(file_path, vector_store)
-        elif file_path.startswith(COMPANY_DATA_FOLDER + os.sep): # Handle relative paths if stored that way
-             if file_path not in current_file_paths_in_folder and processed_log.get(file_path, {}).get('status') == 'processed':
-                logging.info(f"scan_company_data_folder: File '{file_path}' (relative) appears to be removed from source folder.")
-                remove_document_from_store(file_path, vector_store) # Assumes remove_document_from_store can handle relative path
-    logging.info(f"Scan of company data folder: {COMPANY_DATA_FOLDER} complete.")
-
-# ─── RAG Initialization ────────────────────────────────────────────────────────
-logging.info("Initializing RAG components...")
-OPENAI_API_KEY_RAG = os.getenv('OPENAI_API_KEY_RAG', os.getenv('OPENAI_API_KEY'))
-embeddings_rag = None
-vector_store_rag = None
-if OPENAI_API_KEY_RAG:
-    try:
-        embeddings_rag = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=OPENAI_API_KEY_RAG)
-        vector_store_rag = initialize_vector_store()
-        if 'app' in globals() and app: # Check if Flask app context exists
-            app.config['EMBEDDINGS'] = embeddings_rag
-            app.config['VECTOR_STORE'] = vector_store_rag
-        else:
-            logging.warning("Flask app context not available during RAG init. Storing embeddings/vector_store globally for now.")
-        if vector_store_rag and embeddings_rag:
-            logging.info("RAG components initialized successfully.")
-            scan_company_data_folder(vector_store_rag, embeddings_rag)
-        else:
-            logging.error("Failed to initialize RAG components (vector_store or embeddings). RAG functionality might be impaired.")
-            if 'app' in globals() and app:
-                app.config['EMBEDDINGS'] = None
-                app.config['VECTOR_STORE'] = None
-    except Exception as e:
-        logging.error(f"Error initializing RAG components: {e}", exc_info=True)
-        if 'app' in globals() and app:
-            app.config['EMBEDDINGS'] = None
-            app.config['VECTOR_STORE'] = None
-else:
-    logging.error("OPENAI_API_KEY_RAG (or OPENAI_API_KEY) not found; RAG functionality will be disabled.")
-    if 'app' in globals() and app:
-        app.config['EMBEDDINGS'] = None
-        app.config['VECTOR_STORE'] = None
-
-# ─── Initialize Google Calendar Service ────────────────────────────────────────
-CALENDAR_SERVICE = get_calendar_service()
-if CALENDAR_SERVICE:
-    logging.info("CALENDAR_CREDENTIAL_VERIFICATION: Google Calendar service initialized successfully using provided credentials.")
-else:
-    logging.error("CALENDAR_CREDENTIAL_VERIFICATION: FAILED to initialize Google Calendar service. Check credentials and API permissions.")
-
-if CALENDAR_SERVICE:
-    logging.info("Google Calendar service initialized successfully.")
-else:
-    logging.warning("Google Calendar service could not be initialized. Appointment scheduling will be disabled.")
-
-# ─── Email Sending Function for Appointment Requests ──────────────────────────
-def send_appointment_request_email(user_name, user_phone, preferred_datetime_str, service_reason_str):
-    """Sends an email with the collected appointment request details."""
-    sender_email = os.getenv('APPOINTMENT_EMAIL_SENDER')
-    sender_password = os.getenv('APPOINTMENT_EMAIL_PASSWORD')
-    receiver_email = 'mohomer12@gmail.com'
-    smtp_server = os.getenv('APPOINTMENT_SMTP_SERVER', 'smtp.gmail.com')
-    smtp_port = int(os.getenv('APPOINTMENT_SMTP_PORT', 587))
-
-    if not all([sender_email, sender_password]):
-        logging.error("Sender email or password not configured for APPOINTMENT_EMAIL. Cannot send appointment request email.")
-        return False
-
-    subject = f"New Appointment Request via Layla Bot: {user_name}"
-    body = (
-        f"A new appointment request has been received from Layla (the virtual assistant):\n\n"
-        f"Name: {user_name}\n"
-        f"Phone (WhatsApp ID): {user_phone}\n"
-        f"Preferred Date/Time: {preferred_datetime_str}\n"
-        f"Service/Reason: {service_reason_str}\n\n"
-        f"Please follow up with the client to confirm their appointment."
-    )
-
-    msg = MIMEText(body, _charset='utf-8') # Ensure UTF-8 for non-English characters
-    msg['Subject'] = subject
-    msg['From'] = sender_email
-    msg['To'] = receiver_email
-
-    try:
-        logging.info(f"Attempting to send appointment request email from {sender_email} to {receiver_email} via {smtp_server}:{smtp_port}")
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, receiver_email, msg.as_string())
-        logging.info("Appointment request email sent successfully.")
-        return True
-    except smtplib.SMTPDataError as e_data:
-        logging.error(f"SMTPDataError sending email. This might be related to email content/formatting. Subject: '{subject}'. Body: '{body[:200]}...' Error: {e_data}", exc_info=True)
-        return False
-    except smtplib.SMTPServerDisconnected as e_disconnect:
-        logging.error(f"SMTPServerDisconnected sending email. This could be a network or server issue. Error: {e_disconnect}", exc_info=True)
-        return False
-    except Exception as e:
-        logging.error(f"Generic error sending appointment request email. Subject: '{subject}'. Error: {e}", exc_info=True)
-        return False
-
-# Add this function in script.py
-
-def send_property_lead_email(lead_data):
-    """Sends an email with the collected property-for-sale lead details."""
-    sender_email = os.getenv('LEAD_EMAIL_SENDER')
-    sender_password = os.getenv('LEAD_EMAIL_PASSWORD')
-    receiver_email = os.getenv('LEAD_EMAIL_RECEIVER')
-
-    if not all([sender_email, sender_password, receiver_email]):
-        logging.error("Email credentials/receiver not configured for property leads.")
-        return False
-
-    subject = f"New 'For Sale' Property Lead via WhatsApp: {lead_data.get('name')}"
-    body_parts = [
-        "A new property lead has been captured by the bot from a seller:\n",
-        f"Client Name: {lead_data.get('name')}",
-        f"WhatsApp Number: {lead_data.get('phone')}",
-        "--- Property Details ---",
-        f"Type: {lead_data.get('property_type')}",
-        f"City: {lead_data.get('city')}",
-        f"Area: {lead_data.get('area')}",
-    ]
-    if 'building' in lead_data:
-        body_parts.append(f"Building Name: {lead_data.get('building')}")
-
-    body_parts.append(f"Asking Price: {lead_data.get('price')} AED")
-
-    body = "\n".join(body_parts)
-
-    msg = MIMEText(body, _charset='utf-8')
-    msg['Subject'] = subject
-    msg['From'] = sender_email
-    msg['To'] = receiver_email
-
-    try:
-        with smtplib.SMTP('smtp.gmail.com', 587) as server:
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, receiver_email, msg.as_string())
-        logging.info("Successfully sent property lead email.")
-        return True
-    except Exception as e:
-        logging.error(f"Error sending property lead email: {e}", exc_info=True)
-        return False
 
 # ─── Conversation history storage ─────────────────────────────────────────────
 CONV_DIR = 'conversations'
 os.makedirs(CONV_DIR, exist_ok=True)
-
-# Define the maximum number of conversation turns to load.
-# A "turn" consists of one user message and one assistant message.
-# So, MAX_HISTORY_TURNS_TO_LOAD * 2 gives the total number of messages.
-# Set this to your desired value (e.g., 10 as in your main script's MAX_HISTORY_TURNS).
 MAX_HISTORY_TURNS_TO_LOAD = 6
 
 def load_history(uid):
@@ -567,157 +98,72 @@ def load_history(uid):
         return []
     try:
         with open(path, encoding='utf-8') as f:
-            data = json.load(f) # Specify UTF-8
-
-        history_messages = []
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and 'role' in item and 'parts' in item:
-                    history_messages.append(item)
-                else:
-                    # Use logging if it's configured in your main script, otherwise print
-                    logging.warning(f"Skipping invalid history item for {uid}: {item}")
-
-            # --- Truncate history after loading ---
-            if len(history_messages) > MAX_HISTORY_TURNS_TO_LOAD * 2:
-                logging.info(f"Loaded {len(history_messages)} messages ({len(history_messages)//2} turns) for {uid}. Truncating to last {MAX_HISTORY_TURNS_TO_LOAD} turns ({MAX_HISTORY_TURNS_TO_LOAD * 2} messages).")
-                history_messages = history_messages[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
-            # --- End of truncation ---
-
-            return history_messages
-        return []
+            data = json.load(f)
+        history_messages = [item for item in data if isinstance(item, dict) and 'role' in item and 'parts' in item]
+        if len(history_messages) > MAX_HISTORY_TURNS_TO_LOAD * 2:
+            return history_messages[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
+        return history_messages
     except Exception as e:
         logging.error(f"Error loading history for {uid}: {e}")
         return []
 
 def save_history(uid, history):
-    # This function expects `history` to be a list of dictionaries.
-    # The truncation for what's *saved* to the file should ideally happen
-    # in your main script (webhook function) *before* calling save_history,
-    # after appending the latest user and assistant messages.
-    # Example from your webhook:
-    # MAX_HISTORY_TURNS = 10
-    # if len(history) > MAX_HISTORY_TURNS * 2:
-    # history = history[-(MAX_HISTORY_TURNS * 2):]
-    # save_history(user_id, history)
-
     path = os.path.join(CONV_DIR, f"{uid}.json")
     try:
-        # Ensure all items in history are serializable dicts as expected.
-        # Your main script already appends new messages as dicts:
-        # new_history_user = {'role': 'user', 'parts': [body]}
-        # new_history_model = {'role': 'model', 'parts': [final_model_response_for_history]}
-        # The check for Langchain types below is for robustness if objects were added directly.
-        serializable_history = []
-        for msg in history:
-            # Check if msg is a Langchain message object (requires imports)
-            # For simplicity, this example assumes your main script always prepares dicts.
-            # If HumanMessage, AIMessage, etc., could be in `history`, ensure they are imported
-            # and uncomment/adapt the isinstance check:
-            # if isinstance(msg, (HumanMessage, AIMessage, SystemMessage)):
-            #     serializable_history.append({'role': msg.type, 'parts': [msg.content]})
-            if isinstance(msg, dict) and 'role' in msg and 'parts' in msg:
-                serializable_history.append(msg)
-            else:
-                logging.warning(f"Skipping non-serializable or malformed history item for {uid} during save: {type(msg)}")
-                # If you expect Langchain objects, you might convert them here or ensure they are pre-converted.
-
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(serializable_history, f, indent=2, ensure_ascii=False) # Specify UTF-8 and ensure_ascii=False
+            json.dump(history, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logging.error(f"Error saving history for {uid}: {e}")
 
-# ─── Function to Extract Appointment Details for Email using LLM ──────────────
-def extract_appointment_details_for_email(conversation_history_str):
-    """
-    Uses the LLM to extract appointment details (name, preferred time, reason)
-    from a snippet of conversation history, which might be in any language.
-    """
-    if not AI_MODEL:
-        logging.error("AI_MODEL not initialized in extract_appointment_details_for_email")
-        return None
 
-    extraction_prompt = (
-        f"Given the following conversation snippet:\n"
-        f"--- --- --- --- --- --- --- --- --- --- --- \n"
-        f"{conversation_history_str}\n"
-        f"--- --- --- --- --- --- --- --- --- --- --- \n"
-        f"The last message from the Assistant confirms that details were collected and a human will follow up.\n"
-        f"The conversation snippet may be in any language (e.g., English, Arabic). Extract the information into the JSON format below.\n"
-        f"The JSON *keys* (i.e., \"name\", \"preferred_datetime\", \"service_reason\") MUST be in English as specified.\n"
-        f"The JSON *values* (e.g., the actual name, the service description) should be the extracted text, even if it's in the original language of the conversation (e.g., Arabic).\n"
-        f"The extracted text for 'name', 'preferred_datetime', and 'service_reason' values MUST be plain text only. Ensure that these values are clean and do not contain any markdown (e.g., asterisks, underscores), HTML, or other special formatting characters. Preserve all characters of the original language (e.g., Arabic, Farsi characters) correctly as simple text. These values will be used directly in an email, so they must be free of any formatting artifacts.\n"
-        f"Extract the user's full name, their stated preferred date and time, and the service/reason for the appointment.\n"
-        f"Respond with ONLY a JSON object in this exact format:\n"
-        f"{{ \n"
-        f"    \"name\": \"extracted full name\" or null,\n"
-        f"    \"preferred_datetime\": \"extracted preferred date and time as a string\" or null,\n"
-        f"    \"service_reason\": \"extracted service or reason for appointment\" or null\n"
-        f"}} \n"
-        f"If any detail is missing or unclear from the user's input in the snippet, use null for its value.\n"
-        f"Focus on what the user explicitly stated for their appointment request. Look through the entire snippet for the details."
-    )
-    try:
-        response = AI_MODEL.invoke([HumanMessage(content=extraction_prompt)])
-        response_text = response.content.strip()
+# ─── Helper Functions ───────────────────────────────────────────────────────────
+def split_message(text, max_chars=1600):
+    """Splits a long message into chunks."""
+    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
-        # Clean potential markdown code block fences
-        if response_text.startswith('```json'):
-            response_text = response_text[len('```json'):].strip()
-        if response_text.endswith('```'):
-            response_text = response_text[:-len('```')].strip()
+def format_target_user_id(user_id_input):
+    """Formats a phone number to the required WhatsApp ID format."""
+    user_id = user_id_input.strip()
+    if '@s.whatsapp.net' not in user_id:
+        user_id = ''.join(filter(str.isdigit, user_id))
+        return f"{user_id}@s.whatsapp.net"
+    return user_id
 
-        logging.info(f"LLM extracted for email: {response_text}")
-        details = json.loads(response_text)
-        return details
-    except Exception as e:
-        logging.error(f"Error extracting appointment details for email with AI: {e}", exc_info=True)
-        return None
+def is_property_related_query(text):
+    """Checks if a query is generally about properties using keywords."""
+    keywords = [
+        'property', 'properties', 'apartment', 'villa', 'house', 'place', 'stay', 'airbnb',
+        'book', 'booking', 'rent', 'rental', 'listing', 'listings', 'available', 'accommodation',
+        'شقة', 'فيلا', 'حجز', 'ايجار', 'سكن', 'متوفر'
+    ]
+    text_lower = text.lower()
+    return any(keyword in text_lower for keyword in keywords)
 
-# ─── Generate response from LLM with RAG and Scheduling ─────────────────────
+# ─── Generate response from LLM with RAG ───────────────────────────────────
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
     if not AI_MODEL:
         return {'type': 'text', 'content': "AI Model not configured."}
 
-    # --- Step 1: Intent and Filter Extraction ---
+    # Step 1: Intent and Filter Extraction
     analysis_prompt = f"""
     Analyze the user's request: '{text}'
-    Determine if this is a query for properties with specific filters (price, location, bedrooms, type, etc.) or a general question.
+    Determine if it's a property search or a general question.
+    Respond with a JSON object with "intent" and "filters".
 
-    Respond with a JSON object with two keys: "intent" and "filters".
-    - "intent" can be "property_search" or "general_question".
-    - "filters" should be a dictionary of criteria if it's a property search, otherwise null.
+    Supported filter keys: `WeekdayPrice`, `WeekendPrice`, `MonthlyPrice`, `Guests`, `City`, `Neighborhood`, `PropertyName`.
+    - For a generic price query like "under 1000", use the `WeekdayPrice` key for filtering.
+    - For numeric keys, the operator can be '<', '>', or '='.
 
-    Supported filter keys are: `Price_AED`, `Bedrooms`, `emirate`, `city`, `area`, `developer`, `Title`.
-    For numeric keys (`Price_AED`, `Bedrooms`), the operator can be '<', '>', or '='.
-
-    Example 1: "show me properties below 1 million aed in dubai"
+    Example 1: "show me properties below 1000 sar in riyadh"
     {{
       "intent": "property_search",
       "filters": {{
-        "Price_AED": {{ "operator": "<", "value": 1000000 }},
-        "city": {{ "operator": "=", "value": "dubai" }}
+        "WeekdayPrice": {{ "operator": "<", "value": 1000 }},
+        "City": {{ "operator": "=", "value": "riyadh" }}
       }}
     }}
-
-    Example 2: "do you have 3 bedroom villas"
-    {{
-      "intent": "property_search",
-      "filters": {{
-        "Bedrooms": {{ "operator": "=", "value": 3 }},
-        "Title": {{ "operator": "=", "value": "villa" }}
-      }}
-    }}
-
-    Example 3: "what is your commission?"
-    {{
-      "intent": "general_question",
-      "filters": null
-    }}
-
     Respond with ONLY the JSON object.
     """
-
     try:
         analysis_response = AI_MODEL.invoke([HumanMessage(content=analysis_prompt)])
         response_text = analysis_response.content.strip()
@@ -725,322 +171,85 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
             response_text = response_text[len('```json'):].strip()
         if response_text.endswith('```'):
             response_text = response_text[:-len('```')].strip()
-
         analysis_json = json.loads(response_text)
         intent = analysis_json.get("intent")
         filters = analysis_json.get("filters")
-        logging.info(f"Query analysis complete. Intent: '{intent}', Filters: {filters}")
     except Exception as e:
         logging.error(f"Failed to analyze user query with LLM: {e}. Defaulting to general question.")
         intent = "general_question"
         filters = None
 
-    # --- Step 2: REVISED Logic Execution Based on Intent and Keywords ---
+    # Step 2: Logic Execution Based on Intent
     context_str = ""
-    # The main condition is now broader to catch all property-related queries.
     if (intent == "property_search" or is_property_related_query(text)) and PROPERTY_SHEET_ID:
-
-        logging.info("Performing property database search (Google Sheets).")
         all_properties_df = property_handler.get_sheet_data()
-
         if not all_properties_df.empty:
-            # If specific filters were found by the AI, use them.
-            if filters:
-                logging.info(f"Applying specific filters: {filters}")
-                filtered_df = property_handler.filter_properties(all_properties_df, filters)
-            # Otherwise, use the whole dataframe for a general listing.
-            else:
-                logging.info("No specific filters found; preparing a general list of properties.")
-                filtered_df = all_properties_df
-
+            filtered_df = property_handler.filter_properties(all_properties_df, filters) if filters else all_properties_df
             if not filtered_df.empty:
                 context_str = "Relevant Information Found:\n"
-                # Show top 5 results, whether from a filtered search or a general list.
                 for _, prop in filtered_df.head(5).iterrows():
-                    prop_details = (
-                        f"Title: {prop.get('Title', 'N/A')}\n"
-                        f"Location: {prop.get('area', '')}, {prop.get('city', '')}, {prop.get('emirate', '')}\n"
-                        f"Price: {prop.get('Price_AED', 'N/A')} AED\n"
-                        f"Bedrooms: {prop.get('Bedrooms', 'N/A')}\n"
+                    price_parts = []
+                    if pd.notna(prop.get('WeekdayPrice')) and prop.get('WeekdayPrice') > 0: price_parts.append(f"Weekday: {prop.get('WeekdayPrice')} SAR/night")
+                    if pd.notna(prop.get('WeekendPrice')) and prop.get('WeekendPrice') > 0: price_parts.append(f"Weekend: {prop.get('WeekendPrice')} SAR/night")
+                    if pd.notna(prop.get('MonthlyPrice')) and prop.get('MonthlyPrice') > 0: price_parts.append(f"Monthly: {prop.get('MonthlyPrice')} SAR")
+                    price_str = ", ".join(price_parts) or "Price available on request"
+
+                    context_str += (
+                        f"PropertyName: {prop.get('PropertyName', 'N/A')}\n"
+                        f"Location: {prop.get('Neighborhood', 'N/A')}, {prop.get('City', 'N/A')}\n"
+                        f"Price: {price_str}\n"
+                        f"Max Guests: {prop.get('Guests', 'N/A')}\n"
                         f"Description: {prop.get('Description', 'No description available.')}\n"
                     )
-                    context_str += prop_details
-                    # Add images if available
-                    for img_col in ['img1', 'img2', 'img3']:
-                        img_url = prop.get(img_col)
-                        if img_url and isinstance(img_url, str) and img_url.startswith('http'):
-                            context_str += f"[ACTION_SEND_IMAGE_VIA_URL]\n{img_url}\n{prop.get('Title', 'Property Image')}\n"
+                    
+                    image_urls = [prop.get(f'ImageURL{i}') for i in range(1, 4) if pd.notna(prop.get(f'ImageURL{i}')) and str(prop.get(f'ImageURL{i}')).startswith('http')]
+                    if image_urls:
+                        context_str += "[ACTION_SEND_IMAGE_GALLERY]\n" + "\n".join(image_urls) + f"\nImages for {prop.get('PropertyName', 'the property')}\n"
+
+                    video_url = prop.get('VideoURL1')
+                    if pd.notna(video_url) and str(video_url).startswith('http'):
+                        context_str += f"[VIDEO_LINK]: {video_url}\n"
                     context_str += "---\n"
             else:
-                context_str = "Relevant Information Found:\nNo properties found matching your criteria. Please try different keywords or filters."
+                context_str = "Relevant Information Found:\nNo properties found matching your criteria."
         else:
-             context_str = "Relevant Information Found:\nI was unable to access the property listings at this moment. Please try again shortly."
-
+             context_str = "Relevant Information Found:\nI was unable to access property listings."
     else:
-        # This 'else' block now correctly handles only TRULY general, non-property questions.
-        logging.info("Performing general RAG query using vector store for a non-property question.")
-        vector_store = current_app.config.get('VECTOR_STORE') or vector_store_rag
+        vector_store = current_app.config.get('VECTOR_STORE')
         if vector_store:
-            retrieved_docs = query_vector_store(text, vector_store, k=5)
+            retrieved_docs = query_vector_store(text, vector_store, k=3)
             if retrieved_docs:
-                processed_docs_content = [re.sub(r'\*+\s*(.*?)\s*\*+', r'\1', doc.page_content) for doc in retrieved_docs]
-                context_str = "\n\nRelevant Information Found:\n" + "\n".join(processed_docs_content)
-            else:
-                logging.info("No relevant context found in vector store for the general query.")
-        else:
-            logging.warning("Vector store not available for general query.")
+                context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
 
-    # --- Step 3: Generate Final Response Based on Context ---
+    # Step 3: Generate Final Response
     final_prompt_to_llm = context_str + f"\n\nUser Question: {text}" if context_str else text
-    messages = [SystemMessage(content=BASE_PROMPT)]
-    if history_dicts:
-        for item in history_dicts:
-            role = item.get('role')
-            parts = item.get('parts')
-            if role and parts and isinstance(parts, list) and parts:
-                content = parts[0]
-                if role == 'user': messages.append(HumanMessage(content=content))
-                elif role in ['model', 'assistant']: messages.append(AIMessage(content=content))
-    messages.append(HumanMessage(content=final_prompt_to_llm))
+    messages = [SystemMessage(content=BASE_PROMPT)] + history_dicts + [HumanMessage(content=final_prompt_to_llm)]
 
     for attempt in range(retries):
         try:
-            logging.info(f"Sending to LLM for final response generation (Attempt {attempt+1})")
             resp = AI_MODEL.invoke(messages)
             raw_llm_output = resp.content.strip()
 
-            if "[ACTION_SEND_IMAGE_VIA_URL]" in raw_llm_output:
-                image_parts = []
-                for line in raw_llm_output.splitlines():
-                    if line.strip() == "[ACTION_SEND_IMAGE_VIA_URL]" or (image_parts and len(image_parts) < 3):
-                        image_parts.append(line)
-                if len(image_parts) >= 3:
-                    image_url = image_parts[1].strip()
-                    image_caption = image_parts[2].strip()
-                    if image_url.startswith('http'):
-                        return {'type': 'image', 'url': image_url, 'caption': image_caption}
-
-            response_text_for_display = re.sub(r'\[ACTION_SEND_IMAGE_VIA_URL\]\n.*\n.*', '', raw_llm_output).strip()
-            response_text_for_display = response_text_for_display.replace("[ACTION_NOTIFY_UNANSWERED_QUERY]", "").replace("[ACTION_SEND_EMAIL_CONFIRMATION]", "").strip()
-
-            if response_text_for_display:
-                return {'type': 'text', 'content': response_text_for_display}
-
-            logging.warning(f"LLM returned an empty or token-only response on attempt {attempt+1}. Raw output: {raw_llm_output}")
-
+            if raw_llm_output.startswith("[ACTION_SEND_IMAGE_GALLERY]"):
+                lines = raw_llm_output.splitlines()
+                urls = [line for line in lines[1:-1] if line.strip().startswith('http')]
+                caption = lines[-1] if len(lines) > 1 else "Here are the images:"
+                return {'type': 'gallery', 'urls': urls, 'caption': caption}
+            else:
+                response_text = re.sub(r'\[ACTION_SEND_IMAGE_GALLERY\].*?(\n|$)', '', raw_llm_output, flags=re.DOTALL)
+                response_text = re.sub(r'\[VIDEO_LINK\]:.*?\n', '', response_text).strip()
+                return {'type': 'text', 'content': response_text}
         except Exception as e:
             logging.warning(f"LLM API error on attempt {attempt+1}/{retries}: {e}")
             if attempt + 1 == retries:
-                logging.error("All LLM attempts failed.", exc_info=True)
-                return {'type': 'text', 'content': "I am having trouble processing your request at the moment. Please try again shortly."}
-            time.sleep((2 ** attempt) + random.uniform(0.1, 0.5))
+                return {'type': 'text', 'content': "I am having trouble processing your request. Please try again."}
+            time.sleep((2 ** attempt))
 
     return {'type': 'text', 'content': "I could not generate a response after multiple attempts."}
 
-# === APPOINTMENT SCHEDULING HANDLER (handle_appointment_scheduling) ===
-# WhatsApp sending functions (send_whatsapp_message, send_whatsapp_image_message)
-# have been moved to whatsapp_utils.py
-# Ensure that all calls to these functions throughout script.py
-# will correctly use the imported versions.
-
-def handle_appointment_scheduling(message):
-    """Handle appointment scheduling requests. Interprets user input as Dubai time,
-    stores events in New York time, and confirms to user in Dubai time."""
-
-    if not CALENDAR_SERVICE:
-        return "Sorry, appointment scheduling is currently unavailable. Please contact us directly to book your appointment."
-
-    datetime_info = extract_datetime_with_ai(message)
-
-    if not datetime_info or not datetime_info.get('has_datetime'):
-        return (
-            "I'd be happy to help you schedule an appointment! \n\n"
-            "Could you please provide more details? For example:\n"
-            "• What date would you prefer?\n"
-            "• What time works best for you?\n"
-            "• What type of service do you need?"
-        )
-
-    try:
-        date_str = datetime_info.get('date')
-        time_str = datetime_info.get('time')
-        duration = int(datetime_info.get('duration_minutes', 60))
-        service_type = datetime_info.get('service_type', 'General Consultation')
-
-        if not date_str:
-            return "I understand you want to schedule an appointment, but I need a specific date. Could you please tell me which date you prefer?"
-
-        appointment_date_dubai_naive = datetime.strptime(date_str, '%Y-%m-%d').date()
-
-        if not time_str:
-            return (
-                f"Great! I can help you schedule a {service_type} on {appointment_date_dubai_naive.strftime('%A, %B %d, %Y')} ({TARGET_DISPLAY_TIMEZONE.zone} time) \n\n"
-                "What time would work best for you? For example:\n"
-                "• 9:00 AM\n• 2:00 PM\n• 4:30 PM"
-            )
-
-        appointment_time_dubai_naive = datetime.strptime(time_str, '%H:%M').time()
-
-        intended_start_dt_dubai_naive = datetime.combine(appointment_date_dubai_naive, appointment_time_dubai_naive)
-        intended_start_dt_dubai_aware = TARGET_DISPLAY_TIMEZONE.localize(intended_start_dt_dubai_naive)
-        intended_end_dt_dubai_aware = intended_start_dt_dubai_aware + timedelta(minutes=duration)
-
-        current_dubai_time = datetime.now(TARGET_DISPLAY_TIMEZONE)
-        if intended_start_dt_dubai_aware < current_dubai_time:
-            return "I can't schedule appointments in the past. Could you please choose a future date and time?"
-
-        event_start_dt_storage_tz_aware = intended_start_dt_dubai_aware.astimezone(EVENT_STORAGE_TIMEZONE)
-        event_end_dt_storage_tz_aware = intended_end_dt_dubai_aware.astimezone(EVENT_STORAGE_TIMEZONE)
-
-        event_start_dt_storage_tz_naive = event_start_dt_storage_tz_aware.replace(tzinfo=None)
-        event_end_dt_storage_tz_naive = event_end_dt_storage_tz_aware.replace(tzinfo=None)
-
-        logging.info(f"Intended Dubai time: {intended_start_dt_dubai_aware.strftime('%Y-%m-%d %H:%M %Z')}")
-        logging.info(f"Equivalent Storage ({EVENT_STORAGE_TIMEZONE.zone}) time for GCal: {event_start_dt_storage_tz_aware.strftime('%Y-%m-%d %H:%M %Z')}")
-
-        if not check_availability(CALENDAR_SERVICE, event_start_dt_storage_tz_naive, event_end_dt_storage_tz_naive):
-            return (
-                f"Unfortunately, {intended_start_dt_dubai_aware.strftime('%A, %B %d at %I:%M %p %Z')} is not available. \n\n"
-                "Could you please suggest another time? I'd be happy to help you find an alternative slot."
-            )
-
-        event_title = f"{service_type} - WhatsApp Booking"
-        event_description = (
-            f"Appointment scheduled via WhatsApp.\n"
-            f"Service: {service_type}\n"
-            f"Duration: {duration} minutes\n"
-            f"Intended time ({TARGET_DISPLAY_TIMEZONE.zone}): {intended_start_dt_dubai_aware.strftime('%Y-%m-%d %H:%M %Z')}"
-        )
-
-        test_attendee_email = None
-
-        created_event_api_response = create_calendar_event(
-            CALENDAR_SERVICE,
-            event_title,
-            event_start_dt_storage_tz_naive,
-            event_end_dt_storage_tz_naive,
-            event_description,
-            attendee_email=test_attendee_email
-        )
-
-        if created_event_api_response and created_event_api_response.get('htmlLink'):
-            return (
-                f"Perfect! Your appointment has been scheduled:\n\n"
-                f"Date: {intended_start_dt_dubai_aware.strftime('%A, %B %d, %Y')}\n"
-                f"Time: {intended_start_dt_dubai_aware.strftime('%I:%M %p %Z')} ({TARGET_DISPLAY_TIMEZONE.zone})\n"
-                f"Duration: {duration} minutes\n"
-                f"Service: {service_type}\n\n"
-                f"You'll receive a reminder. Looking forward to seeing you!"
-            )
-        else:
-            logging.error(f"Failed to create event or event link missing. API Response: {created_event_api_response}")
-            return "I encountered an issue while creating your appointment. Please try again or contact us directly."
-
-    except ValueError as ve:
-        logging.error(f"ValueError in appointment scheduling: {ve}", exc_info=True)
-        return "There was an issue with the date or time format. Please provide it like 'YYYY-MM-DD' for date and 'HH:MM' for time."
-    except Exception as e:
-        logging.error(f"Error in appointment scheduling: {e}", exc_info=True)
-        return "Sorry, I had trouble processing your appointment request. Could you please try again with a specific date and time?"
-# === END OF APPOINTMENT SCHEDULING HANDLER ===
-
-# ─── Split long messages ──────────────────────────────────────────────────────
-def split_message(text, max_lines=2, max_chars=1000):
-    parts = text.split('\n')
-    chunks = []
-    current_chunk_lines = []
-    current_chunk_char_count = 0
-    for line in parts:
-        line_len_with_newline = len(line) + (1 if current_chunk_lines else 0)
-        if (len(current_chunk_lines) >= max_lines or \
-            current_chunk_char_count + line_len_with_newline > max_chars) and current_chunk_lines:
-            chunks.append('\n'.join(current_chunk_lines))
-            current_chunk_lines = []
-            current_chunk_char_count = 0
-        current_chunk_lines.append(line)
-        current_chunk_char_count += line_len_with_newline
-    if current_chunk_lines: chunks.append('\n'.join(current_chunk_lines))
-    return chunks
-
-# WhatsApp sending functions (send_whatsapp_message, send_whatsapp_image_message)
-# were moved to whatsapp_utils.py and are imported at the top of script.py.
-# The global WASENDER_API_URL, WASENDER_API_TOKEN, and HTTP_SESSION
-# that were specific to these functions in script.py have also been removed,
-# as this configuration is now handled within whatsapp_utils.py.
-
-# ─── Health Check Endpoint ─────────────────────────────────────────────────────
-@app.route('/')
-def home():
-    return "WhatsApp Bot is running!"
-
-def extract_sheet_id_from_url(url_or_id: str) -> str:
-    if not url_or_id:
-        return None
-
-    # Attempt to extract ID from a URL
-    url_match = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', url_or_id)
-    if url_match:
-        logging.info(f"Extracted Sheet ID '{url_match.group(1)}' from URL '{url_or_id}'.")
-        return url_match.group(1)
-
-    # If no URL match, check if the string itself looks like a valid Sheet ID
-    # Google Sheet IDs are typically 44 characters long and use base64url characters (A-Z, a-z, 0-9, -, _)
-    if re.fullmatch(r'[a-zA-Z0-9-_]{30,}', url_or_id): # Check for typical ID characters and min length (IDs are usually ~44 chars)
-        logging.info(f"Input '{url_or_id}' appears to be a direct Sheet ID.")
-        return url_or_id
-
-    # If it's not a recognizable URL and doesn't look like a typical ID
-    logging.warning(f"Input '{url_or_id}' could not be parsed as a Google Sheet URL nor does it look like a typical Sheet ID. Proceeding with the original input.")
-    # Returning the original input and letting the Sheets API call fail later might give more specific errors.
-    # However, for outreach, we might want to be stricter. For now, returning it.
-    return url_or_id
-
-@app.route('/webhook-google-sync', methods=['POST'])
-def webhook_google_sync():
-    """
-    Webhook endpoint to receive notifications from Google Apps Scripts
-    when a Document or Sheet is modified.
-    It queues a background task to process the update.
-    """
-    try:
-        data = request.get_json()
-        if not isinstance(data, dict) or 'documentId' not in data or 'secretToken' not in data:
-            logging.warning(f"/webhook-google-sync: Invalid payload received: {data}")
-            return jsonify(error='Invalid payload. Missing documentId or secretToken.'), 400
-
-        document_id = data.get('documentId')
-        received_token = data.get('secretToken')
-
-        expected_token = os.getenv('FLASK_SECRET_TOKEN')
-
-        if not expected_token:
-            logging.error("/webhook-google-sync: FLASK_SECRET_TOKEN not configured on the server.")
-            # For security reasons, avoid giving too much detail to the client here.
-            return jsonify(error='Webhook service not configured correctly.'), 500
-
-        if received_token != expected_token:
-            logging.warning(f"/webhook-google-sync: Unauthorized attempt. Received token: '{received_token}' for document: {document_id}")
-            return jsonify(error='Unauthorized.'), 403
-
-        # Authentication successful
-        logging.info(f"/webhook-google-sync: Authentication successful for document_id: {document_id}. Queuing background task.")
-
-        # Get the current Flask app context to pass to the background thread
-        # This allows the background thread to use current_app, logging, etc.
-        current_app_context = current_app.app_context()
-
-        # Submit the task to the ThreadPoolExecutor
-        executor.submit(process_google_document_update, document_id, current_app_context)
-
-        return jsonify(status='success', message='Document update task queued.'), 202
-
-    except Exception as e:
-        logging.exception(f"Error in /webhook-google-sync: {e}")
-        return jsonify(error='Internal Server Error'), 500
-
-# START OF NEW handle_new_messages
+# ─── Main Webhook Handler ──────────────────────────────────────────────────────
 @app.route('/hook', methods=['POST'])
-def handle_new_messages():
+def webhook():
     try:
         data = request.json or {}
         incoming_messages = data.get('messages', [])
@@ -1053,343 +262,105 @@ def handle_new_messages():
 
             sender = message.get('from')
             msg_type = message.get('type')
-
-            # --- START: NEW "SELL PROPERTY" FLOW LOGIC ---
-            if sender in sell_flow_states:
-                state_info = sell_flow_states[sender]
-                current_state = state_info.get('state')
-                user_data = state_info.get('data', {})
-
-                user_reply_text = ""
-                if msg_type == 'text':
-                    user_reply_text = message.get('text', {}).get('body', '').strip()
-                elif msg_type == 'reply' and message.get('reply', {}).get('type') in ['list_reply', 'buttons_reply']:
-                    reply_data = message['reply'].get('list_reply') or message['reply'].get('buttons_reply')
-                    user_reply_text = reply_data.get('title')
-
-                if not user_reply_text:
-                    logging.info(f"Sell flow: Empty reply from {sender}, state {current_state}. Waiting for valid input.")
-                    continue
-
-                if current_state == 'awaiting_seller_name':
-                    user_data['name'] = user_reply_text
-                    sell_flow_states[sender] = {'state': 'awaiting_seller_property_type', 'data': user_data}
-                    type_list_data = {
-                        "header": "Choosing property type:",
-                        "body": "Please tell us what type of property do you want to sell?",
-                        "footer": "Select one from the list below:",
-                        "label": "Press here to select property type",
-                        "sections": [{"title": "Type of Property", "rows": [
-                            {"id": "type_villa", "title": "Villa"}, {"id": "type_apartment", "title": "Apartment"},
-                            {"id": "type_penthouse", "title": "Penthouse"}, {"id": "type_townhouse", "title": "Townhouse"},
-                            {"id": "type_other", "title": "Other"}
-                        ]}]
-                    }
-                    send_interactive_list_message(sender, type_list_data)
-
-                elif current_state == 'awaiting_seller_property_type':
-                    user_data['property_type'] = user_reply_text
-                    sell_flow_states[sender] = {'state': 'awaiting_seller_city', 'data': user_data}
-                    city_rows = [{"id": f"city_{city.lower().replace(' ', '')}", "title": city} for city in UAE_CITIES]
-                    city_list_data = {
-                        "header": "Choosing City:",
-                        "body": "In which city is your property located?",
-                        "footer": "Please select a city from the list.",
-                        "label": "Select City",
-                        "sections": [{"title": "Cities in UAE", "rows": city_rows}]
-                    }
-                    send_interactive_list_message(sender, city_list_data)
-
-                elif current_state == 'awaiting_seller_city':
-                    user_data['city'] = user_reply_text
-                    sell_flow_states[sender] = {'state': 'awaiting_seller_area', 'data': user_data}
-                    areas_for_city = UAE_AREAS.get(user_reply_text, [])
-                    if not areas_for_city:
-                        areas_for_city = ["Other"]
-
-                    area_rows = [{"id": f"area_{area.lower().replace(' ', '_')}", "title": area} for area in areas_for_city]
-                    if not any(r['title'] == 'Other' for r in area_rows) and user_reply_text in UAE_AREAS :
-                         if "Other" not in areas_for_city:
-                            area_rows.append({"id": "area_other", "title": "Other"})
-
-                    area_list_data = {
-                        "header": f"Choosing Area in {user_reply_text}:",
-                        "body": "Please select the area.",
-                        "label": "Select Area",
-                        "sections": [{"title": f"Areas in {user_reply_text}", "rows": area_rows}]
-                    }
-                    send_interactive_list_message(sender, area_list_data)
-
-                elif current_state == 'awaiting_seller_area':
-                    user_data['area'] = user_reply_text
-                    if user_data.get('property_type', '').lower() == 'apartment':
-                        sell_flow_states[sender] = {'state': 'awaiting_seller_building_name', 'data': user_data}
-                        send_whatsapp_message(sender, "Understood. What is the name of the building?")
-                    else:
-                        sell_flow_states[sender] = {'state': 'awaiting_seller_price', 'data': user_data}
-                        send_whatsapp_message(sender, "Great! What is your asking price in AED?")
-
-                elif current_state == 'awaiting_seller_building_name':
-                    user_data['building'] = user_reply_text
-                    sell_flow_states[sender] = {'state': 'awaiting_seller_price', 'data': user_data}
-                    send_whatsapp_message(sender, "Great! And what is your asking price in AED?")
-
-                elif current_state == 'awaiting_seller_price':
-                    user_data['price'] = user_reply_text
-                    user_data['phone'] = sender.split('@')[0]
-
-                    send_whatsapp_message(sender, "Thank you for all the details. Our team will review the information and get in touch with you shortly!")
-
-                    email_sent_successfully = send_property_lead_email(user_data)
-                    if email_sent_successfully:
-                        logging.info(f"Property lead email for {user_data.get('name')} sent successfully.")
-                    else:
-                        logging.error(f"Failed to send property lead email for {user_data.get('name')}.")
-
-                    del sell_flow_states[sender]
-                continue
-
             body_for_fallback = None
 
-            if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply':
-                button_reply_data = message['reply']['buttons_reply']
-                button_id = button_reply_data.get('id')
-                button_title = button_reply_data.get('title')
-                body_for_fallback = button_title
-                logging.info(f"User {sender} clicked button: ID='{button_id}', Title='{button_title}'")
-
-                if button_id and button_id.endswith('button_1_id'):
-                    sell_flow_states[sender] = {'state': 'awaiting_seller_name', 'data': {}}
-                    send_whatsapp_message(sender, "Great! We can certainly help with that. To start, could you please tell me your full name?")
-                    continue
-
-            elif msg_type == 'text':
+            if msg_type == 'text':
                 body_for_fallback = message.get('text', {}).get('body')
             elif msg_type == 'image' or msg_type == 'video':
                 body_for_fallback = f"[User sent a {msg_type}]"
                 if message.get('media', {}).get('caption'):
                     body_for_fallback += f" with caption: {message['media']['caption']}"
-            elif msg_type == 'audio':
-                media_url = message.get('media', {}).get('url')
-                if media_url and openai_client:
-                    try:
-                        audio_response = requests.get(media_url)
-                        audio_response.raise_for_status()
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_audio_file:
-                            tmp_audio_file.write(audio_response.content)
-                            tmp_audio_file_path = tmp_audio_file.name
-
-                        transcript = openai_client.audio.transcriptions.create(
-                            model="whisper-1", file=open(tmp_audio_file_path, "rb")
-                        )
-                        body_for_fallback = transcript.text
-                        os.remove(tmp_audio_file_path)
-                    except Exception as e:
-                        logging.error(f"Error during audio transcription: {e}")
-                        body_for_fallback = "[Audio transcription failed.]"
-                else:
-                    body_for_fallback = "[Audio received, but could not be transcribed.]"
-
+            
             if not (sender and body_for_fallback):
-                if msg_type == 'reply' and message.get('reply', {}).get('type') == 'list_reply':
-                     logging.warning(f"Received list_reply from {sender} outside of active sell flow. Ignoring.")
-                elif not body_for_fallback:
-                     logging.warning(f"Webhook ignored: no sender or body_for_fallback. Message Type: {msg_type}, Message: {message}")
                 continue
 
-            # --- FALLBACK to existing command/RAG logic ---
             normalized_body = body_for_fallback.lower().strip()
             global is_globally_paused
 
             if normalized_body == "bot pause all":
                 is_globally_paused = True
                 send_whatsapp_message(sender, "Bot is now globally paused.")
-                logging.info(f"Bot globally paused by {sender}.")
                 continue
-
             if normalized_body == "bot resume all":
                 is_globally_paused = False
                 paused_conversations.clear()
-                send_whatsapp_message(sender, "Bot is now globally resumed. All specific conversation pauses have been cleared.")
-                logging.info(f"Bot globally resumed by {sender}. Specific pauses cleared.")
+                send_whatsapp_message(sender, "Bot is now globally resumed.")
                 continue
-
             if normalized_body.startswith("bot pause "):
-                parts = normalized_body.split("bot pause ", 1)
-                if len(parts) > 1 and parts[1].strip():
-                    target_user_id = parts[1].strip()
+                target_user_input = normalized_body.split("bot pause ", 1)[1].strip()
+                if target_user_input:
+                    target_user_id = format_target_user_id(target_user_input)
                     paused_conversations.add(target_user_id)
                     send_whatsapp_message(sender, f"Bot interactions will be paused for: {target_user_id}")
-                    logging.info(f"Bot interactions paused for {target_user_id} by {sender}.")
-                else:
-                    send_whatsapp_message(sender, "Invalid command format. Use: bot pause <target_user_id>")
-                    logging.info(f"Invalid 'bot pause' command from {sender}: {normalized_body}")
                 continue
-
             if normalized_body.startswith("bot resume "):
-                parts = normalized_body.split("bot resume ", 1)
-                if len(parts) > 1 and parts[1].strip():
-                    target_user_id = parts[1].strip()
+                target_user_input = normalized_body.split("bot resume ", 1)[1].strip()
+                if target_user_input:
+                    target_user_id = format_target_user_id(target_user_input)
                     paused_conversations.discard(target_user_id)
                     send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}")
-                    logging.info(f"Bot interactions resumed for {target_user_id} by {sender}.")
-                else:
-                    send_whatsapp_message(sender, "Invalid command format. Use: bot resume <target_user_id>")
-                    logging.info(f"Invalid 'bot resume' command from {sender}: {normalized_body}")
                 continue
 
-            if normalized_body.startswith("bot start outreach"):
-                parts = normalized_body.split("bot start outreach", 1)
-                sheet_specifier = parts[1].strip() if len(parts) > 1 and parts[1].strip() else os.getenv('DEFAULT_OUTREACH_SHEET_ID')
-
-                if not sheet_specifier:
-                    send_whatsapp_message(sender, "Error: No Google Sheet ID was provided or found in the default environment variable.")
-                    logging.warning(f"Outreach command by {sender} failed: no sheet specifier.")
-                    continue
-
-                parsed_sheet_id = extract_sheet_id_from_url(sheet_specifier)
-                if not parsed_sheet_id:
-                    send_whatsapp_message(sender, f"Error: The provided Google Sheet specifier '{sheet_specifier}' is invalid.")
-                    continue
-
-                send_whatsapp_message(sender, f"Outreach campaign started using Sheet ID: {parsed_sheet_id}. You will be notified upon completion.")
-                executor.submit(process_outreach_campaign, parsed_sheet_id, sender, current_app.app_context())
-                logging.info(f"Outreach campaign submitted to executor for {sender} with Sheet ID: {parsed_sheet_id}.")
-                continue
-
-            if is_globally_paused:
-                logging.info(f"Bot is globally paused. Ignoring message from {sender}: {body_for_fallback[:100]}...")
-                continue
-
-            if sender in paused_conversations:
-                logging.info(f"Conversation with {sender} is paused. Ignoring message: {body_for_fallback[:100]}...")
+            if is_globally_paused or sender in paused_conversations:
                 continue
 
             user_id = ''.join(c for c in sender if c.isalnum())
-            logging.info(f"Incoming from {sender} (UID: {user_id}): {body_for_fallback}")
-
             history = load_history(user_id)
             llm_response_data = get_llm_response(body_for_fallback, sender, history)
 
             final_model_response_for_history = ""
-
-            if llm_response_data['type'] == 'image':
-                image_url = llm_response_data['url']
-                caption = llm_response_data['caption']
-                logging.info(f"Attempting to send image to {sender}. URL: {image_url}, Caption: {caption}")
-                success = send_whatsapp_image_message(sender, caption, image_url)
-                if success:
-                    final_model_response_for_history = f"[Sent Image: {image_url} with caption: {caption}]"
-                    logging.info(f"Successfully sent image to {sender}.")
-                else:
-                    final_model_response_for_history = f"[Failed to send Image: {image_url} with caption: {caption}]"
-                    logging.error(f"Failed to send image to {sender}. URL: {image_url}")
-                    fallback_message = "I tried to send you an image, but it seems there was a problem. Please try again later or ask me something else!"
-                    send_whatsapp_message(sender, fallback_message)
-            elif llm_response_data['type'] == 'text':
+            if llm_response_data.get('type') == 'gallery':
+                gallery = llm_response_data
+                if gallery.get('urls'):
+                    logging.info(f"Sending gallery to {sender}.")
+                    for i, url in enumerate(gallery['urls']):
+                        send_whatsapp_image_message(sender, gallery['caption'] if i == 0 else "", url)
+                        time.sleep(1.5)
+                    final_model_response_for_history = f"[Sent gallery of {len(gallery['urls'])} images]"
+            
+            elif llm_response_data.get('type') == 'text' and llm_response_data.get('content'):
                 text_content = llm_response_data['content']
                 final_model_response_for_history = text_content
                 chunks = split_message(text_content)
-                for idx, chunk in enumerate(chunks, start=1):
-                    if not send_whatsapp_message(sender, chunk):
-                        logging.error(f"Failed to send chunk {idx}/{len(chunks)} to {sender}. Aborting further sends for this message.")
-                        break
-                    if idx < len(chunks):
-                        time.sleep(random.uniform(2.0, 3.0))
-            else:
-                logging.error(f"Unknown response type from get_llm_response: {llm_response_data.get('type')}")
-                final_model_response_for_history = "[Error: Unknown response type from LLM]"
-                error_message = "I'm having a bit of trouble processing that request. Could you try rephrasing?"
-                send_whatsapp_message(sender, error_message)
+                for chunk in chunks:
+                    send_whatsapp_message(sender, chunk)
+                    time.sleep(1)
 
-            new_history_user = {'role': 'user', 'parts': [body_for_fallback]}
-            new_history_model = {'role': 'model', 'parts': [final_model_response_for_history]}
-            history.append(new_history_user)
-            history.append(new_history_model)
-
-            MAX_HISTORY_TURNS = 10
-            if len(history) > MAX_HISTORY_TURNS * 2:
-                history = history[-(MAX_HISTORY_TURNS * 2):]
-
+            history.extend([
+                {'role': 'user', 'parts': [body_for_fallback]},
+                {'role': 'model', 'parts': [final_model_response_for_history]}
+            ])
+            if len(history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
+                history = history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
             save_history(user_id, history)
 
         return jsonify(status='success'), 200
 
-    except json.JSONDecodeError as je:
-        logging.error(f"Webhook JSONDecodeError: {je}. Raw data: {request.data}")
-        return jsonify(status='error', message='Invalid JSON payload'), 400
     except Exception as e:
         logging.exception(f"FATAL Error in webhook processing: {e}")
         return jsonify(status='error', message='Internal Server Error'), 500
-# END OF NEW handle_new_messages
 
-# ─── Background Task Function for Google Document Updates ──────────────────────
-def process_google_document_update(document_id, app_context):
-    """
-    Placeholder function for background processing of Google Document updates.
-    This function will be executed in a separate thread by the ThreadPoolExecutor.
-    It fetches content from Google Drive based on MIME type and processes it for RAG.
-    """
-    with app_context:
-        try:
-            logging.info(f"Background task started for Google Drive document_id: {document_id}")
+# ─── App Startup ──────────────────────────────────────────────────────────────
+# Moved RAG initialization here to run when the app is loaded by the WSGI server
+with app.app_context():
+    try:
+        embeddings_rag = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=os.getenv('OPENAI_API_KEY'))
+        vector_store_rag = initialize_vector_store()
+        if vector_store_rag and embeddings_rag:
+            app.config['EMBEDDINGS'] = embeddings_rag
+            app.config['VECTOR_STORE'] = vector_store_rag
+            logging.info("RAG components initialized and stored in app config.")
+        else:
+            logging.error("Failed to initialize RAG components.")
+    except Exception as e:
+        logging.critical(f"A critical error occurred during RAG initialization: {e}")
 
-            # Get RAG components from Flask app config
-            vector_store = current_app.config.get('VECTOR_STORE')
-            embeddings = current_app.config.get('EMBEDDINGS')
-
-            if not vector_store or not embeddings:
-                logging.critical(f"Background task for {document_id}: VECTOR_STORE or EMBEDDINGS not found in app.config. Aborting RAG update.")
-                return
-
-            # Get MIME type of the Google Drive file
-            mime_type = get_google_drive_file_mime_type(document_id)
-            if mime_type is None:
-                logging.error(f"Background task for {document_id}: Failed to fetch MIME type, or file not found/accessible. Aborting RAG update.")
-                return
-
-            text_content = None
-            # Fetch content based on MIME type
-            if mime_type == 'application/vnd.google-apps.document':
-                logging.info(f"Document ID {document_id} is a Google Doc. Fetching content...")
-                text_content = get_google_doc_content(document_id)
-            elif mime_type == 'application/vnd.google-apps.spreadsheet':
-                logging.info(f"Document ID {document_id} is a Google Sheet. Fetching content...")
-                text_content = get_google_sheet_content(document_id)
-            else:
-                logging.warning(f"Unsupported MIME type '{mime_type}' for document ID {document_id}. Skipping RAG processing.")
-                return # Exit if MIME type is not supported
-
-            # Process content if it was successfully fetched
-            if text_content is not None:
-                logging.info(f"Successfully fetched content for {document_id}. Length: {len(text_content)}. Processing for RAG...")
-                success = process_google_document_text(document_id, text_content, vector_store, embeddings)
-                if success:
-                    logging.info(f"Successfully processed and updated RAG store for document ID {document_id}.")
-                else:
-                    logging.error(f"Failed to process document ID {document_id} for RAG store.")
-            else:
-                # This case implies get_google_doc_content or get_google_sheet_content returned None
-                logging.error(f"Failed to fetch content for document ID {document_id} (MIME type: {mime_type}). RAG store not updated.")
-
-            logging.info(f"Background task finished for Google Drive document_id: {document_id}")
-
-        except Exception as e:
-            logging.error(f"Unexpected error in background task for document_id {document_id}: {e}", exc_info=True)
-
-def is_property_related_query(text):
-    """Checks if a query is generally about properties using keywords."""
-    keywords = [
-        'property', 'properties', 'apartment', 'villa', 'house',
-        'buy', 'rent', 'lease', 'listing', 'listings', 'available', 'real estate'
-    ]
-    text_lower = text.lower()
-    return any(keyword in text_lower for keyword in keywords)
+# Set the webhook once when the application starts
+set_webhook()
 
 if __name__ == '__main__':
-    # Set up webhook on startup
-    set_webhook()
-
-    # Start the Flask app
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    # This block is for local development and debugging ONLY.
+    # It will NOT run on Render, which uses the waitress/gunicorn start command.
+    logging.warning("RUNNING IN LOCAL DEVELOPMENT MODE. DO NOT USE IN PRODUCTION.")
+    port = int(os.getenv('PORT', 5001)) # Use a different port for local testing
+    app.run(host='0.0.0.0', port=port, debug=True)
