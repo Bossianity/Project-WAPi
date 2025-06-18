@@ -140,7 +140,7 @@ BASE_PROMPT = (
 AI_MODEL = None
 if OPENAI_API_KEY:
     try:
-        AI_MODEL = ChatOpenAI(model='gpt-4o', openai_api_key=OPENAI_API_KEY, temperature=0.4)
+        AI_MODEL = ChatOpenAI(model='gpt-4o', openai_api_key=OPENAI_API_KEY, temperature=0.2)
         logging.info("ChatOpenAI model initialized successfully.")
     except Exception as e:
         logging.error(f"Failed to initialize ChatOpenAI model: {e}", exc_info=True)
