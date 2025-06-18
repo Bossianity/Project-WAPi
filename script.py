@@ -435,7 +435,12 @@ def webhook():
             if message.get('from_me'):
                 continue
 
-            sender = message.get('from')
+            sender = message.get('from') # Original line
+            if not sender: # Add a check for sender validity
+                logging.warning("Webhook: Message received without a 'from' field. Skipping.")
+                continue
+            sender = format_target_user_id(sender) # Normalize the sender ID here
+
             msg_type = message.get('type')
             body_for_fallback = None
 
