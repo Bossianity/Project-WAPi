@@ -95,7 +95,7 @@ APP_CONFIG = {
 }
 
 # --- Global Pause Feature ---
-is_globally_paused = False
+is_globally_paused = True
 paused_conversations = set()
 active_conversations_during_global_pause = set()
 
