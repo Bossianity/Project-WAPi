@@ -1092,6 +1092,8 @@ def handle_new_messages():
             return jsonify(status='success_no_messages'), 200
 
         for message in incoming_messages:
+            body_for_fallback = None # Initialize body_for_fallback for each message
+
             if message.get('from_me'):
                 continue
 
