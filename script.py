@@ -22,6 +22,15 @@ from email.mime.text import MIMEText
 import property_handler
 import threading # <-- Import the threading module
 
+from interactive_messages import (
+    initial_greeting_message_components,
+    owner_options_message_components,
+    furnished_apartment_message_components,
+    unfurnished_apartment_message_components,
+    tenant_options_message_components
+    # other_inquiries_message_components # if defined and used
+)
+
 # Ensure other custom modules are in the same directory or accessible via PYTHONPATH
 import property_handler # Explicitly importing, was implicitly used.
 from rag_handler import (
@@ -38,7 +47,15 @@ from google_drive_handler import (
     get_google_sheet_content
 )
 from outreach_handler import process_outreach_campaign
-from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, set_webhook, send_interactive_list_message, send_custom_interactive_message
+# Import the specific sender functions that will be used
+from whatsapp_utils import (
+    send_whatsapp_message,
+    send_whatsapp_image_message,
+    set_webhook,
+    send_interactive_list_message,
+    send_interactive_button_message # Explicitly using these now
+    # send_custom_interactive_message # This will no longer be used for the main flow by this script
+)
 
 
 # ─── Load Environment and Configuration ──────────────────────────────────────
@@ -105,6 +122,58 @@ def detect_language_from_text(text):
     # If mostly ASCII, assume English or let the content decide (defaulting to 'ar' is safer for this app)
     return 'ar'
 
+def prepare_interactive_message_data(message_components, language):
+    """
+    Prepares translated message data for sending functions from component structures.
+    """
+    data = {}
+    # Helper to get translated text safely, falling back to 'en' then to a placeholder if totally missing.
+    def tr(component, key, lang, default_text="[text missing]"):
+        if key not in component:
+            return default_text
+        target_lang_text = component[key].get(lang)
+        if target_lang_text:
+            return target_lang_text
+        return component[key].get('en', default_text)
+
+    if 'header' in message_components:
+        data['header'] = tr(message_components, 'header', language)
+    if 'body' in message_components:
+        data['body'] = tr(message_components, 'body', language)
+    if 'footer' in message_components:
+        data['footer'] = tr(message_components, 'footer', language)
+
+    if 'buttons' in message_components:
+        data['buttons'] = []
+        for btn_comp in message_components['buttons']:
+            btn_data = {
+                "id": btn_comp['id'],
+                "type": btn_comp['type'],
+                "title": tr(btn_comp, 'title', language, default_text="Button") # Placeholder for button title
+            }
+            if btn_comp['type'] == 'url':
+                btn_data['url'] = btn_comp['url'] # URL is not translated
+            data['buttons'].append(btn_data)
+
+    if 'list_action' in message_components: # For list messages
+        list_action_comp = message_components['list_action']
+        data['label'] = tr(list_action_comp, 'label', language, default_text="Menu") # Label for the button that opens the list
+        data['sections'] = []
+        for sec_comp in list_action_comp.get('sections', []):
+            sec_data = {
+                "title": tr(sec_comp, 'title', language, default_text="Section"), # Title for the section
+                "rows": []
+            }
+            for row_comp in sec_comp.get('rows', []):
+                row_data = {
+                    "id": row_comp['id'],
+                    "title": tr(row_comp, 'title', language, default_text="Option") # Title for the row
+                }
+                if 'description' in row_comp: # Optional description for the row
+                    row_data['description'] = tr(row_comp, 'description', language, default_text="")
+                sec_data['rows'].append(row_data)
+            data['sections'].append(sec_data)
+    return data
 
 # ─── Persona and AI Prompt Configuration ──────────────────────────────────
 PERSONA_NAME = "مساعد"
@@ -527,46 +596,63 @@ def webhook():
                 current_language = detect_language_from_text(button_or_list_title_for_lang_detect)
                 logging.info(f"Webhook: Detected language for interactive reply from {sender} as '{current_language}' based on title '{button_or_list_title_for_lang_detect}'.")
 
-                next_message_name = None
+                next_message_components_key_name = None
                 ai_action_for_history = None
 
                 if clicked_button_id:
-                    if clicked_button_id == "button_id1": # "أملك شقة وحاب أشغلها"
-                        next_message_name = "owner_options"
-                    elif clicked_button_id == "button_id2": # "أبي أستأجر شقة"
-                        next_message_name = "tenant_options"
-                    elif clicked_button_id == "button_id3": # "أبي أتواصل مع خدمة العملاء"
+                    if clicked_button_id == "button_id1":
+                        next_message_components_key_name = "owner_options_message_components"
+                    elif clicked_button_id == "button_id2":
+                        next_message_components_key_name = "tenant_options_message_components"
+                    elif clicked_button_id == "button_id3": # "أستفسارات أخرى"
                         text_to_send = "سيتم التواصل معك قريبا بخصوص استفسارك." if current_language == 'ar' else "Our team will contact you shortly regarding your inquiry."
                         send_whatsapp_message(sender, text_to_send)
                         ai_action_for_history = text_to_send
                         users_in_interactive_flow.discard(sender)
                     elif clicked_button_id == "button_id4": # "نعم مؤثثة"
-                        next_message_name = "furnished_apartment"
+                        next_message_components_key_name = "furnished_apartment_message_components"
                     elif clicked_button_id == "button_id5": # "لا غير مؤثثة"
-                        next_message_name = "unfurnished_apartment"
+                        next_message_components_key_name = "unfurnished_apartment_message_components"
                     elif clicked_button_id in ["button_id7", "button_id8"]: # URL buttons
-                        logging.info(f"Webhook: User {sender} clicked URL button {clicked_button_id}. No response message needed.")
-                        ai_action_for_history = f"[User clicked URL button {clicked_button_id}]" # No actual AI message sent
+                        logging.info(f"Webhook: User {sender} clicked URL button {clicked_button_id}. No further bot message needed.")
+                        ai_action_for_history = f"[User clicked URL button {clicked_button_id}]"
                         users_in_interactive_flow.discard(sender)
 
                 elif clicked_list_item_id:
-                    if clicked_list_item_id.startswith("row_id"):
+                    if clicked_list_item_id.startswith("row_id"): # City selection from list
                         city_selected = message.get('interactive', {}).get('list_reply', {}).get('title', 'the selected city')
-                        text_to_send = f"شكرا لاختيارك {city_selected}. سيقوم فريقنا بالتواصل معك قريبا." if current_language == 'ar' else f"Thanks for selecting {city_selected}. Our team will contact you shortly."
+                        text_to_send = f"شكرا لاختيارك {city_selected}. سيقوم فريقنا بالتواصل معك قريبا بخصوص طلبك في مدينة {city_selected}." if current_language == 'ar' else f"Thanks for selecting {city_selected}. Our team will contact you shortly regarding your request in {city_selected}."
                         send_whatsapp_message(sender, text_to_send)
                         ai_action_for_history = text_to_send
                         users_in_interactive_flow.discard(sender)
 
-                if next_message_name:
-                    success = send_custom_interactive_message(sender, next_message_name, current_language)
-                    if success:
-                        logging.info(f"Webhook: Successfully sent interactive message '{next_message_name}' to {sender} in {current_language}.")
-                        ai_action_for_history = f"[Sent {next_message_name} in {current_language}]"
-                        # users_in_interactive_flow remains active if they are sent another interactive message
+                if next_message_components_key_name:
+                    actual_components = globals().get(next_message_components_key_name)
+                    if actual_components:
+                        message_data_to_send = prepare_interactive_message_data(actual_components, current_language)
+                        success = False
+                        logging_msg_type = "" # For logging
+
+                        if "list_action" in actual_components:
+                            success = send_interactive_list_message(sender, message_data_to_send)
+                            logging_msg_type = "list"
+                        else:
+                            success = send_interactive_button_message(sender, message_data_to_send)
+                            logging_msg_type = "button"
+
+                        if success:
+                            logging.info(f"Webhook: Successfully sent interactive {logging_msg_type} message for '{next_message_components_key_name}' to {sender} in {current_language}.")
+                            ai_action_for_history = f"[Sent {logging_msg_type} message: {next_message_components_key_name} in {current_language}]"
+                        else:
+                            logging.error(f"Webhook: Failed to send interactive {logging_msg_type} message for '{next_message_components_key_name}' to {sender}. Sending text fallback.")
+                            fallback_text = "عذراً، حدث خطأ ما. الرجاء المحاولة مرة أخرى لاحقاً." if current_language == 'ar' else "Sorry, something went wrong. Please try again later."
+                            send_whatsapp_message(sender, fallback_text)
+                            ai_action_for_history = f"[Failed to send {next_message_components_key_name}, sent text fallback: {fallback_text}]"
+                            users_in_interactive_flow.discard(sender)
                     else:
-                        logging.error(f"Webhook: Failed to send interactive message '{next_message_name}' to {sender} in {current_language}.")
-                        ai_action_for_history = f"[Failed to send {next_message_name} in {current_language}]"
-                        # Consider removing from flow or sending fallback text? For now, just log.
+                        logging.error(f"Webhook: Message components key '{next_message_components_key_name}' not found in globals.")
+                        ai_action_for_history = f"[Error: Message components key '{next_message_components_key_name}' not found]"
+                        # users_in_interactive_flow.discard(sender) # Consider if flow is broken
 
                 if ai_action_for_history:
                     history.append(AIMessage(content=ai_action_for_history))
@@ -653,35 +739,32 @@ def webhook():
                     detected_language = 'ar'
 
                 if detected_language:
-                    logging.info(f"Webhook: Detected greeting '{normalized_body}' from {sender} in {detected_language}.")
-                    # Send initial interactive message
-                    success = send_custom_interactive_message(sender, "initial_greeting", detected_language)
+                    logging.info(f"Webhook: Detected greeting '{normalized_body}' from {sender} in {detected_language}. Preparing initial_greeting_message_components.")
+                    message_data_to_send = prepare_interactive_message_data(initial_greeting_message_components, detected_language)
+                    success = send_interactive_button_message(sender, message_data_to_send) # Initial greeting is buttons
+
+                    ai_action_content = ""
                     if success:
                         users_in_interactive_flow.add(sender)
-                        logging.info(f"Webhook: Successfully sent initial_greeting to {sender} in {detected_language}. User added to interactive flow.")
-                        ai_action_content = "[Sent initial_greeting_message]"
+                        logging.info(f"Webhook: Successfully sent initial_greeting_message_components to {sender} in {detected_language}.")
+                        ai_action_content = "[Sent initial_greeting_message_components]"
                     else:
-                        logging.error(f"Webhook: Failed to send initial_greeting to {sender} in {detected_language}. Sending text fallback.")
+                        logging.error(f"Webhook: Failed to send initial_greeting_message_components to {sender} in {detected_language}. Sending text fallback.")
                         fallback_text = "عذراً، حدث خطأ ما. الرجاء المحاولة مرة أخرى لاحقاً." if detected_language == 'ar' else "Sorry, something went wrong. Please try again later."
                         send_whatsapp_message(sender, fallback_text)
-                        ai_action_content = f"[Failed to send initial_greeting, sent text fallback: {fallback_text}]"
-                        users_in_interactive_flow.discard(sender) # Remove from flow as interactive part failed
+                        ai_action_content = f"[Failed to send initial_greeting_message_components, sent text fallback: {fallback_text}]"
+                        users_in_interactive_flow.discard(sender)
 
-                    # Save history for greeting attempt (success or failure)
                     user_id_for_history = ''.join(c for c in sender if c.isalnum())
                     history = load_history(user_id_for_history)
-                    history.append(HumanMessage(content=body_for_fallback)) # User's greeting
-                    history.append(AIMessage(content=ai_action_content)) # AI's action
+                    history.append(HumanMessage(content=body_for_fallback))
+                    history.append(AIMessage(content=ai_action_content))
                     if len(history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
                         history = history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
                     save_history(user_id_for_history, history)
-
-                    # If initial greeting was sent (even if fallback text was the actual message due to failure),
-                    # we 'continue' to prevent LLM processing for this turn.
-                    # The user's next message will either be an interactive reply or new text.
                     continue # Skip LLM call for this turn
 
-            # --- LLM Processing (if not handled by greeting or other flows) ---
+            # --- LLM Processing (if not handled by greeting or other flows, or if user in flow sends text) ---
             if msg_type == 'text' and sender in users_in_interactive_flow:
                 logging.info(f"Webhook: User {sender} is in interactive flow but sent a text message. Processing with LLM.")
 

@@ -41,6 +41,8 @@ def send_whapi_request(endpoint, params=None, method='POST', is_media=False, tim
                     response = requests.post(url, data=multipart_data, headers=headers, timeout=timeout)
             else:
                 headers['Content-Type'] = 'application/json'
+                # Log the payload for non-media requests
+                logging.info(f"Sending Whapi request to '{url}' with method '{method}'. Payload: {json.dumps(params, indent=2, ensure_ascii=False)}")
                 response = requests.request(method, url, json=params, headers=headers, timeout=timeout)
 
             response.raise_for_status()
@@ -121,12 +123,18 @@ def send_interactive_button_message(to, message_data):
     endpoint = 'messages/interactive'
 
     buttons_payload = []
-    for btn in message_data.get('buttons', []):
-        buttons_payload.append({
-            "type": "quick_reply",
-            "title": btn.get('title'),
-            "id": btn.get('id')
-        })
+    for btn_data in message_data.get('buttons', []):
+        button_entry = {
+            "type": btn_data.get("type"), # e.g., "quick_reply" or "url"
+            "title": btn_data.get("title"),
+            "id": btn_data.get("id") # For quick_reply, this is the postback data. For URL, it's an identifier.
+        }
+        if btn_data.get("type") == "url":
+            button_entry["url"] = btn_data.get("url")
+            # 'id' for URL buttons is optional in some APIs, but good to keep if provided for consistency
+            # If 'id' is not strictly needed for URL buttons by Whapi, it could be omitted when type is 'url'.
+            # However, the problem description implies 'id' is part of the component, so we include it.
+        buttons_payload.append(button_entry)
 
     payload = {
         "to": to,

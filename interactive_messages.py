@@ -1,234 +1,79 @@
 # interactive_messages.py
+# Stores components for interactive messages with translations.
+# script.py will use these components to build the final JSON payloads
+# for whatsapp_utils.py functions.
 
-initial_greeting_message = {
-    "type": "button",
-    "view_once": True,
-    "body": {
-        "text": {
-            "ar": "هلا ! 👋\nأنا مساعدك الآلي في تطبيق وصلت.\n\nتقدر تعرف من خلالي أكثر عن خدمات وصلت وكيف ممكن أساعدك سواء كنت مالك أو مستأجر.",
-            "en": "Hello! 👋\nI am your automated assistant in the Wasalt app.\n\nThrough me, you can learn more about Wasalt's services and how I can help you, whether you are an owner or a tenant."
-        }
-    },
-    "footer": {
-        "text": {
-            "ar": "اختر واحدة من الخيارات التالية:",
-            "en": "Choose one of the following options:"
-        }
-    },
-    "action": {
-        "buttons": [
-            {
-                "type": "reply",
-                "reply": {
-                    "id": "button_id1",
-                    "title": {
-                        "ar": "أملك شقة وحاب أشغلها",
-                        "en": "I own an apartment and want to operate it"
-                    }
-                }
-            },
-            {
-                "type": "reply",
-                "reply": {
-                    "id": "button_id2",
-                    "title": {
-                        "ar": "أبي أستأجر شقة",
-                        "en": "I want to rent an apartment"
-                    }
-                }
-            },
-            {
-                "type": "reply",
-                "reply": {
-                    "id": "button_id3",
-                    "title": {
-                        "ar": "أبي أتواصل مع خدمة العملاء",
-                        "en": "I want to contact customer service"
-                    }
-                }
-            }
-        ]
-    }
+initial_greeting_message_components = {
+    "header": {"ar": "هلا ! أنا مساعد من شركة عوجا لإدارة الأملاك", "en": "Hello! I am an assistant from Awja Property Management"},
+    "body": {"ar": "كيف ممكن أخدمك اليوم؟", "en": "How can I help you today?"},
+    "footer": {"ar": "أضغط لتختار:", "en": "Click to choose:"},
+    "buttons": [
+        {"id": "button_id1", "type": "quick_reply", "title": {"ar": "أملك شقة وحاب أشغلها", "en": "I own an apartment I want to operate"}},
+        {"id": "button_id2", "type": "quick_reply", "title": {"ar": "ابي أستاجر شقة", "en": "I want to rent an apartment"}},
+        {"id": "button_id3", "type": "quick_reply", "title": {"ar": "أستفسارات أخرى", "en": "Other inquiries"}}
+    ]
 }
 
-owner_options_message = {
-    "type": "button",
-    "view_once": True,
-    "body": {
-        "text": {
-            "ar": "تمام، شقتك مؤثثة ولا لا؟ 🤔",
-            "en": "Okay, is your apartment furnished or not? 🤔"
-        }
-    },
-    "action": {
-        "buttons": [
-            {
-                "type": "reply",
-                "reply": {
-                    "id": "button_id4",
-                    "title": {
-                        "ar": "نعم مؤثثة",
-                        "en": "Yes, furnished"
-                    }
-                }
-            },
-            {
-                "type": "reply",
-                "reply": {
-                    "id": "button_id5",
-                    "title": {
-                        "ar": "لا غير مؤثثة",
-                        "en": "No, unfurnished"
-                    }
-                }
-            }
-        ]
-    }
+owner_options_message_components = {
+    "header": {"ar": "نتشرف بيك!", "en": "We are honored to have you!"},
+    "body": {"ar": "بس حابين نعرف اذا هي مؤثثة(مفروشة) أو لا؟", "en": "We just want to know if it is furnished or not?"},
+    "footer": {"ar": "أضغط لتختار:", "en": "Click to choose:"},
+    "buttons": [
+        {"id": "button_id4", "type": "quick_reply", "title": {"ar": "نعم مؤثثة", "en": "Yes, furnished"}},
+        {"id": "button_id5", "type": "quick_reply", "title": {"ar": "لا غير مؤثثة", "en": "No, unfurnished"}}
+    ]
 }
 
-furnished_apartment_message = {
-    "type": "button",
-    "view_once": True,
-    "body": {
-        "text": {
-            "ar": "حلو، وصلت تقدم لك خدمة إدارة وتأجير الشقق المفروشة بالنيابة عنك.\n\nتقدر تعرف أكثر من خلال موقعنا الإلكتروني وتقدر كمان تسجل شقتك من خلال الرابط التالي:",
-            "en": "Great, Wasalt offers you the service of managing and renting furnished apartments on your behalf.\n\nYou can find out more through our website and you can also register your apartment through the following link:"
-        }
-    },
-    "action": {
-        "buttons": [
-            {
-                "type": "url",
-                "reply": {
-                    "id": "button_id7",
-                    "title": {
-                        "ar": "سجل شقتك",
-                        "en": "Register your apartment"
-                    },
-                    "url": "https://wasalt.com/owner-register"
-                }
-            }
-        ]
-    }
+furnished_apartment_message_components = {
+    "header": {"ar": "الرجاء ملء الاستبيان", "en": "Please fill out the survey"},
+    "body": {"ar": "عشان نقدر نخدمك ممكن تملى الإستبيان؟", "en": "So we can serve you, can you fill out the survey?"},
+    "footer": {"ar": "أضغط لفتح الرابط:", "en": "Click to open the link:"},
+    "buttons": [
+        {"id": "button_id7", "type": "url", "title": {"ar": "استبيان الشقق المؤثثة", "en": "Furnished Apartments Survey"}, "url": "https://form.typeform.com/to/eFGv4yhC"}
+    ]
 }
 
-unfurnished_apartment_message = {
-    "type": "button",
-    "view_once": True,
-    "body": {
-        "text": {
-            "ar": "حلو، وصلت تقدم لك خدمة إدارة وتأجير الشقق غير المفروشة بالنيابة عنك.\n\nتقدر تعرف أكثر من خلال موقعنا الإلكتروني وتقدر كمان تسجل شقتك من خلال الرابط التالي:",
-            "en": "Great, Wasalt offers you the service of managing and renting unfurnished apartments on your behalf.\n\nYou can find out more through our website and you can also register your apartment through the following link:"
-        }
-    },
-    "action": {
-        "buttons": [
-            {
-                "type": "url",
-                "reply": {
-                    "id": "button_id8",
-                    "title": {
-                        "ar": "سجل شقتك",
-                        "en": "Register your apartment"
-                    },
-                    "url": "https://wasalt.com/owner-register"
-                }
-            }
-        ]
-    }
+unfurnished_apartment_message_components = {
+    "header": {"ar": "ولا يهمك، عندنا خدمة تأثيث بمعايير فندقية وأسعار تنافسية", "en": "No worries, we have a furnishing service with hotel standards and competitive prices"},
+    "body": {"ar": "مهندسينا خبرتهم أكثر من 8 سنوات ومنفذين فوق 500 مشروع.", "en": "Our engineers have more than 8 years of experience and have completed over 500 projects."},
+    "footer": {"ar": "فقط عبي الإستبيان:", "en": "Just fill out the survey:"},
+    "buttons": [
+        {"id": "button_id8", "type": "url", "title": {"ar": "استبيان التأثيث", "en": "Furnishing Survey"}, "url": "https://form.typeform.com/to/vDKXMSaQ"}
+    ]
 }
 
-tenant_options_message = {
-    "type": "list",
-    "view_once": True,
-    "header": {
-        "type": "text",
-        "text": {
-            "ar": "اختيارك موفق! وصلت يوفر لك أفضل الشقق وبأفضل الأسعار.",
-            "en": "Good choice! Wasalt provides you with the best apartments at the best prices."
-        }
-    },
-    "body": {
-        "text": {
-            "ar": "تقدر تبحث عن شقة حسب المدينة اللي تناسبك، تفضل قائمة بالمدن المتوفرة حاليًا:",
-            "en": "You can search for an apartment according to the city that suits you. Here is a list of currently available cities:"
-        }
-    },
-    "footer": {
-        "text": {
-            "ar": "اختر المدينة لعرض الشقق المتاحة",
-            "en": "Choose the city to display available apartments"
-        }
-    },
-    "action": {
-        "button": {
-            "ar": "المدن",
-            "en": "Cities"
-        },
+tenant_options_message_components = {
+    "header": {"ar": "إختيار المدينة", "en": "Select City"},
+    "body": {"ar": "في أي مدينة تبغي تحجز؟", "en": "In which city do you want to book?"},
+    "footer": {"ar": "إختار من القائمة:", "en": "Choose from the list:"},
+    "list_action": { # This key indicates it's a list message
+        "label": {"ar": "قائمة المدن السعودية", "en": "List of Saudi Cities"},
         "sections": [
             {
-                "title": {
-                    "ar": "اختر مدينة",
-                    "en": "Select a city"
-                },
+                "title": {"ar": "قائمة المدن السعودية", "en": "List of Saudi Cities"},
                 "rows": [
-                    {
-                        "id": "row_id1",
-                        "title": {
-                            "ar": "الرياض",
-                            "en": "Riyadh"
-                        },
-                        "description": {
-                            "ar": "العاصمة وأكبر مدن المملكة",
-                            "en": "The capital and largest city of the Kingdom"
-                        }
-                    },
-                    {
-                        "id": "row_id2",
-                        "title": {
-                            "ar": "جدة",
-                            "en": "Jeddah"
-                        },
-                        "description": {
-                            "ar": "عروس البحر الأحمر",
-                            "en": "The Bride of the Red Sea"
-                        }
-                    },
-                    {
-                        "id": "row_id3",
-                        "title": {
-                            "ar": "الدمام",
-                            "en": "Dammam"
-                        },
-                        "description": {
-                            "ar": "المركز الإداري للمنطقة الشرقية",
-                            "en": "The administrative center of the Eastern Province"
-                        }
-                    },
-                    {
-                        "id": "row_id4",
-                        "title": {
-                            "ar": "مكة المكرمة",
-                            "en": "Makkah Al-Mukarramah"
-                        },
-                        "description": {
-                            "ar": "أقدس بقاع الأرض لدى المسلمين",
-                            "en": "The holiest place on earth for Muslims"
-                        }
-                    },
-                    {
-                        "id": "row_id5",
-                        "title": {
-                            "ar": "المدينة المنورة",
-                            "en": "Al-Madinah Al-Munawwarah"
-                        },
-                        "description": {
-                            "ar": "ثاني أقدس المدن الإسلامية",
-                            "en": "The second holiest city in Islam"
-                        }
-                    }
+                    {"id": "row_id1", "title": {"ar": "الرياض", "en": "Riyadh"}},
+                    {"id": "row_id2", "title": {"ar": "جدة", "en": "Jeddah"}},
+                    {"id": "row_id3", "title": {"ar": "مكة المكرمة", "en": "Makkah Al-Mukarramah"}},
+                    {"id": "row_id4", "title": {"ar": "المدينة المنورة", "en": "Al-Madinah Al-Munawwarah"}},
+                    {"id": "row_id5", "title": {"ar": "الدمام", "en": "Dammam"}},
+                    {"id": "row_id6", "title": {"ar": "تبوك", "en": "Tabuk"}},
+                    {"id": "row_id7", "title": {"ar": "بريدة", "en": "Buraidah"}},
+                    {"id": "row_id8", "title": {"ar": "الطائف", "en": "Taif"}},
+                    {"id": "row_id9", "title": {"ar": "خميس مشيط", "en": "Khamis Mushait"}},
+                    {"id": "row_id10", "title": {"ar": "حائل", "en": "Hail"}}
                 ]
             }
         ]
     }
 }
+
+# Placeholder for a potential "other inquiries" message if it becomes interactive
+# other_inquiries_message_components = {
+# "header": {"ar": "استفسارات أخرى", "en": "Other Inquiries"},
+# "body": {"ar": "الرجاء توضيح استفسارك ليتم تحويله للفريق المختص.", "en": "Please clarify your inquiry to be forwarded to the concerned team."},
+# "footer": {"ar": "فريقنا في خدمتك", "en": "Our team is at your service"},
+# "buttons": [
+# {"id": "button_id_manual_input", "type": "quick_reply", "title": {"ar": "كتابة الاستفسار", "en": "Write my inquiry"}}
+# ]
+# }
