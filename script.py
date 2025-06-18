@@ -424,6 +424,7 @@ def google_docs_webhook_sync():
 # ─── Main Webhook Handler ──────────────────────────────────────────────────────
 @app.route('/hook', methods=['POST'])
 def webhook():
+    global is_globally_paused, paused_conversations, active_conversations_during_global_pause
     try:
         data = request.json or {}
         incoming_messages = data.get('messages', [])
@@ -449,9 +450,8 @@ def webhook():
                 continue
 
             normalized_body = body_for_fallback.lower().strip()
-            global is_globally_paused
-            global paused_conversations
-            global active_conversations_during_global_pause
+            logging.info(f"Webhook: Processing message from sender: {sender}, body: '{normalized_body}'")
+            # Removed global declarations from here
 
             if normalized_body == "stop all":
                 is_globally_paused = True
@@ -468,14 +468,19 @@ def webhook():
                 target_user_input = normalized_body.split("stop ", 1)[1].strip()
                 if target_user_input:
                     target_user_id = format_target_user_id(target_user_input)
+                    logging.info(f"COMMAND 'stop {target_user_input}': target_user_id: {target_user_id}")
+                    logging.info(f"COMMAND 'stop {target_user_input}': BEFORE: paused_conversations: {paused_conversations}, active_conversations_during_global_pause: {active_conversations_during_global_pause}")
                     paused_conversations.add(target_user_id)
                     active_conversations_during_global_pause.discard(target_user_id) # Remove if present
+                    logging.info(f"COMMAND 'stop {target_user_input}': AFTER: paused_conversations: {paused_conversations}, active_conversations_during_global_pause: {active_conversations_during_global_pause}")
                     send_whatsapp_message(sender, f"Bot interactions will be paused for: {target_user_id}")
                 continue
             if normalized_body.startswith("start "):
                 target_user_input = normalized_body.split("start ", 1)[1].strip()
                 if target_user_input:
                     target_user_id = format_target_user_id(target_user_input)
+                    logging.info(f"COMMAND 'start {target_user_input}': target_user_id: {target_user_id}, is_globally_paused: {is_globally_paused}")
+                    logging.info(f"COMMAND 'start {target_user_input}': BEFORE: paused_conversations: {paused_conversations}, active_conversations_during_global_pause: {active_conversations_during_global_pause}")
                     if is_globally_paused:
                         active_conversations_during_global_pause.add(target_user_id)
                         paused_conversations.discard(target_user_id) # Ensure it's not in both
@@ -484,8 +489,13 @@ def webhook():
                         paused_conversations.discard(target_user_id)
                         # active_conversations_during_global_pause.discard(target_user_id) # Not strictly necessary here but good for consistency
                         send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}")
+                    logging.info(f"COMMAND 'start {target_user_input}': AFTER: paused_conversations: {paused_conversations}, active_conversations_during_global_pause: {active_conversations_during_global_pause}")
                 continue
 
+            logging.info(f"Webhook: PRE-SKIP CHECK for sender: {sender}")
+            logging.info(f"Webhook: PRE-SKIP CHECK: is_globally_paused: {is_globally_paused}")
+            logging.info(f"Webhook: PRE-SKIP CHECK: paused_conversations: {repr(paused_conversations)}")
+            logging.info(f"Webhook: PRE-SKIP CHECK: active_conversations_during_global_pause: {repr(active_conversations_during_global_pause)}")
             # Check if conversation is individually paused
             if sender in paused_conversations:
                 continue
