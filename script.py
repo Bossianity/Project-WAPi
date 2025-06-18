@@ -37,7 +37,17 @@ from google_drive_handler import (
 )
 from outreach_handler import process_outreach_campaign
 # send_interactive_list_message is added to this import
-from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, set_webhook, send_interactive_list_message
+from whatsapp_utils import (
+    send_whatsapp_message,
+    send_whatsapp_image_message,
+    set_webhook,
+    send_interactive_list_message,
+    send_initial_greeting_message,
+    send_furnished_query_message,
+    send_furnished_apartment_survey_message,
+    send_unfurnished_apartment_survey_message,
+    send_city_selection_message
+)
 
 
 # ─── Data Ingestion Configuration ──────────────────────────────────────────────
@@ -45,6 +55,10 @@ COMPANY_DATA_FOLDER = 'company_data'
 
 # New, simple state tracker for the sell property flow
 sell_flow_states = {}
+
+# State tracker for the new interactive flow
+interactive_flow_states = {}
+user_languages = {} # Stores language per user session
 
 # Hardcoded data for UAE cities and areas for the list messages
 UAE_CITIES = ["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "Ras Al Khaimah", "Fujairah", "Umm Al Quwain"]
@@ -88,32 +102,28 @@ paused_conversations = set()
 
 # ─── Persona loading ───────────────────────────────────────────────────────────
 PERSONA_FILE = 'persona.json'
-PERSONA_NAME = "Emran"
+PERSONA_NAME = "mosaed (مساعد)" # Kept for informational purposes / non-LLM uses
 
-BASE_PROMPT = (
-    "You are Emran, a seasoned real estate sales agent. Your tone is professional, convincing, and direct. You are a businessman focused on closing deals and providing accurate information. Your responses are clear, concise, and to the point. You do not use emojis or other informalities."
-    "CRITICAL LANGUAGE RULE: Your response MUST ALWAYS be in the SAME language as the user's last message. If the user messages in English, you reply in English. If they message in Arabic, you MUST reply in Emirati dialect."
-    "Failure to adhere to this language rule is a critical failure."
-    "YOUR RESPONSES MUST BE GROUNDED ON THE CONTEXT PROVIDED. Do not invent details about properties (prices, features, availability) that are not present in the 'Relevant Information Found'. Your goal is to answer the user's query using the provided context. If the context does not sufficiently answer the query about a factual aspect of a property, state that you will check for that specific detail and get back to them. In this situation, append the exact string `[ACTION_NOTIFY_UNANSWERED_QUERY]` to the end of your response."
-    "You should be persuasive and look for opportunities to upsell or highlight the value of a property, but without sounding needy. You are an expert, not just a salesperson."
-    "You understand context from recent messages. If a user has provided information, do not ask for it again."
-    "When starting a new conversation, begin with a direct greeting: 'This is Emran from [Your Business Name]. How may I assist you with your property inquiry?' Adapt this to the user's language."
-    "If a user wants to schedule a viewing, gather the necessary details: their full name, preferred date and time, and the property of interest (if not already clear). Once you have these details, confirm by stating: 'Thank you. I have your details. A member of our team will contact you shortly to confirm your viewing appointment.' Then, append the exact string `[ACTION_SEND_EMAIL_CONFIRMATION]` to the very end of your response."
-    "TEXT STYLING (CRUCIAL): Absolutely NO emojis, asterisks (*), or any other markdown syntax should be used. Your responses must be plain text. Perform a final check to ensure no such characters are present before sending."
-    "LANGUAGE & DIALECT: Assist the client in any language. If the client uses Arabic, you MUST switch to a professional Emirati dialect (e.g., 'مرحباً، وياك عمران بخصوص العقارات', 'البيانات المطلوبة هي', 'سيتم التواصل معاك قريباً')."
-    "HANDLING RETRIEVED INFORMATION (RAG CONTEXT): When 'Relevant Information Found' is provided, you MUST carefully review all snippets. Synthesize the information to formulate a comprehensive and direct answer. Do not reproduce the original formatting of the source data. Your final response must be clean, natural language."
-    "END OF CONVERSATION: You do not always need to end with a question or an offer for more help. Sometimes, simply providing the answer is sufficient. Be efficient."
-    "IMAGE SENDING TASK: If an 'IMAGE_ENTRY' in the 'Relevant Information Found' is relevant to the user's query, you MUST respond with the strict 3-line format: \n[ACTION_SEND_IMAGE_VIA_URL]\nThe_ImageURL_from_the_IMAGE_ENTRY\nThe_Caption_from_the_IMAGE_ENTRY\nWhen you use this format, no other text should precede or follow it."
+# Renamed to indicate it's a template and name will be added dynamically
+BASE_PROMPT_TEMPLATE = (
+    "You are a helpful and friendly assistant from Al-Ouja Property Management (شركة عوجا لإدارة الأملاك). "
+    "Your primary goal is to guide users through options using interactive messages. "
+    "Your tone is polite, professional, and uses a Saudi dialect when the user communicates in Arabic. "
+    "CRITICAL LANGUAGE RULE: Your response MUST ALWAYS be in the SAME language as the user's last message. If the user messages in English, you reply in English. If they message in Arabic, you MUST reply in Saudi dialect. "
+    "If providing information directly (not via interactive message), keep it concise. "
+    "If a user asks a question that can be answered by one of the interactive flow options, try to steer them towards that flow. "
+    "If the query is not covered by an interactive flow, use the provided 'Relevant Information Found' to answer. "
+    "If the context does not sufficiently answer the query, state that you will check for that specific detail and get back to them, appending `[ACTION_NOTIFY_UNANSWERED_QUERY]`. "
+    "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. "
+    # Greeting part is now handled dynamically in get_llm_response by appending a language-specific example.
 )
 
 try:
     with open(PERSONA_FILE) as f:
         p = json.load(f)
-        # PERSONA_NAME = p.get('name', PERSONA_NAME) # Commented out to ensure "Layla" is used from script
-        pass # persona.json is not used to override Layla's name defined in BASE_PROMPT
-    logging.info(f"Persona name is '{PERSONA_NAME}'. System prompt is now controlled by script.py's BASE_PROMPT.")
+    logging.info(f"Original persona name from {PERSONA_FILE} was '{p.get('name')}'. Script now uses dynamic naming ('Mosaed'/'مساعد') for LLM prompts based on BASE_PROMPT_TEMPLATE.")
 except Exception as e:
-    logging.warning(f"Could not load {PERSONA_FILE} or parse 'name': {e}. Using default name '{PERSONA_NAME}'. System prompt is controlled by script.py's BASE_PROMPT.")
+    logging.warning(f"Could not load {PERSONA_FILE} or parse it: {e}. Using dynamic naming ('Mosaed'/'مساعد') for LLM prompts based on BASE_PROMPT_TEMPLATE.")
 
 # ─── AI Model and API Client Initialization ────────────────────────────────────
 AI_MODEL = None
@@ -792,7 +802,26 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
 
     # --- Step 3: Generate Final Response Based on Context ---
     final_prompt_to_llm = context_str + f"\n\nUser Question: {text}" if context_str else text
-    messages = [SystemMessage(content=BASE_PROMPT)]
+
+    # Dynamically construct system_prompt_content based on language
+    current_language = user_languages.get(sender_id, 'ar') # Default to 'ar' if not found
+
+    if current_language == 'ar':
+        effective_persona_name = "مساعد"
+        system_prompt_content = (
+            f"أنت {effective_persona_name}، مساعد ودود ومتعاون من شركة عوجا لإدارة الأملاك. " +
+            BASE_PROMPT_TEMPLATE +
+            f"\nعند بدء محادثة جديدة (إذا لم تستخدم تحية تفاعلية)، يمكنك أن تقول: 'مرحباً، معك {effective_persona_name} من شركة عوجا لإدارة الأملاك. كيف يمكنني توجيه استفسارك اليوم؟'"
+        )
+    else: # Default to English
+        effective_persona_name = "Mosaed"
+        system_prompt_content = (
+            f"You are {effective_persona_name}, a helpful and friendly assistant from Al-Ouja Property Management. " +
+            BASE_PROMPT_TEMPLATE +
+            f"\nWhen starting a new conversation (if not using an interactive greeting), you might say: 'Hello, this is {effective_persona_name} from Al-Ouja Property Management. How can I direct your inquiry today?'"
+        )
+
+    messages = [SystemMessage(content=system_prompt_content)]
     if history_dicts:
         for item in history_dicts:
             role = item.get('role')
@@ -973,6 +1002,21 @@ def split_message(text, max_lines=2, max_chars=1000):
 def home():
     return "WhatsApp Bot is running!"
 
+# --- Language Detection Function ---
+def detect_language(text):
+    if not text: # Handle empty string case
+        return 'en' # Default to English if text is empty
+    # Basic check for Arabic characters
+    arabic_chars = re.findall(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]', text) # Expanded Arabic unicode range
+    # If more than a small threshold of characters are Arabic, assume 'ar'
+    # Check if more than 30% of non-space chars are Arabic, or if there are at least 3 arabic chars
+    non_space_text_len = len(text.replace(" ", ""))
+    if non_space_text_len == 0 and len(arabic_chars) > 0: # e.g. "   سلام   "
+        return 'ar'
+    if non_space_text_len > 0 and (len(arabic_chars) > 2 or (len(arabic_chars) / non_space_text_len > 0.3)):
+        return 'ar'
+    return 'en'
+
 def extract_sheet_id_from_url(url_or_id: str) -> str:
     if not url_or_id:
         return None
@@ -1051,11 +1095,167 @@ def handle_new_messages():
             if message.get('from_me'):
                 continue
 
-            sender = message.get('from')
-            msg_type = message.get('type')
+            sender = message.get('from') # e.g., "1234567890@c.us" or "group_id@g.us"
+            msg_type = message.get('type') # e.g., "text", "image", "reply" (for button/list replies)
 
-            # --- START: NEW "SELL PROPERTY" FLOW LOGIC ---
-            if sender in sell_flow_states:
+            # --- Language Detection and Storage ---
+            body_text_if_any = ""
+            if msg_type == 'text':
+                body_text_if_any = message.get('text', {}).get('body', '')
+            elif msg_type == 'reply': # For button/list replies, language is usually based on prior interaction
+                # We'll use existing user_languages[sender] or detect from title if needed,
+                # but primarily rely on established language.
+                # For initial detection, if a button reply is the *first* thing we see,
+                # its title could be used, but this is an edge case.
+                reply_content = message.get('reply', {})
+                button_title = reply_content.get('buttons_reply', {}).get('title')
+                list_title = reply_content.get('list_reply', {}).get('title')
+                body_text_if_any = button_title or list_title or ""
+
+            if sender not in user_languages or (msg_type == 'text' and body_text_if_any): # Update language if new user or new text message
+                detected_lang = detect_language(body_text_if_any)
+                user_languages[sender] = detected_lang
+                logging.info(f"Language for {sender} set/updated to: {detected_lang} based on text: '{body_text_if_any[:50]}'")
+
+            current_language = user_languages.get(sender, 'ar') # Default to Arabic if somehow not set after detection logic
+
+            # --- START: NEW INTERACTIVE FLOW LOGIC ---
+            user_in_interactive_flow = sender in interactive_flow_states
+
+            if user_in_interactive_flow:
+                current_step = interactive_flow_states[sender].get('step')
+                logging.info(f"User {sender} is in interactive flow, step: {current_step}, lang: {current_language}")
+
+                button_id = None
+                selected_row_id = None
+                selected_title = None # For list or button replies
+
+                if msg_type == 'reply':
+                    reply_content = message.get('reply', {})
+                    if reply_content.get('type') == 'buttons_reply':
+                        button_id = reply_content['buttons_reply'].get('id')
+                        selected_title = reply_content['buttons_reply'].get('title')
+                        logging.info(f"Interactive flow: Button reply from {sender}. ID: {button_id}, Title: {selected_title}, Step: {current_step}")
+                    elif reply_content.get('type') == 'list_reply':
+                        selected_row_id = reply_content['list_reply'].get('id')
+                        selected_title = reply_content['list_reply'].get('title')
+                        logging.info(f"Interactive flow: List reply from {sender}. ID: {selected_row_id}, Title: {selected_title}, Step: {current_step}")
+
+                body_for_fallback = selected_title # Use button/list title for fallback if not handled by new flow
+
+                if current_step == 'awaiting_initial_choice' and button_id:
+                    if button_id == 'button_id1': # Owns apartment
+                        send_furnished_query_message(sender, language=current_language)
+                        interactive_flow_states[sender]['step'] = 'awaiting_furnished_choice'
+                        return jsonify(status='success_interactive_handled'), 200
+                    elif button_id == 'button_id2': # Wants to rent
+                        send_city_selection_message(sender, language=current_language)
+                        interactive_flow_states[sender]['step'] = 'awaiting_city_choice'
+                        return jsonify(status='success_interactive_handled'), 200
+                    elif button_id == 'button_id3': # Other inquiries
+                        # Using current_language for the generic message
+                        response_text = "Please type your question, and I'll do my best to help."
+                        if current_language == 'ar':
+                            response_text = "الرجاء كتابة سؤالك، وسأبذل قصارى جهدي لمساعدتك."
+                        send_whatsapp_message(sender, response_text)
+                        del interactive_flow_states[sender]
+                        # Let it fall through to RAG/LLM by not returning explicitly.
+                        # body_for_fallback will be the button title "Other inquiries", which might not be ideal for RAG.
+                        # Consider setting body_for_fallback to a more neutral "User asked for other inquiries" or None.
+                        # For now, let's clear it so RAG doesn't act on the button title.
+                        body_for_fallback = "User selected 'Other inquiries' and will type their question."
+                        # This will then be processed by the RAG after this interactive block.
+                    else:
+                        response_text = "Sorry, I didn't understand that selection. Please try again."
+                        if current_language == 'ar':
+                            response_text = "عذراً، لم أفهم هذا الاختيار. الرجاء المحاولة مرة أخرى."
+                        send_whatsapp_message(sender, response_text)
+                        # Optionally, resend initial greeting or just wait for next input
+                        # send_initial_greeting_message(sender, language=current_language)
+                        return jsonify(status='success_interactive_reprompted_unknown_button'), 200
+
+                elif current_step == 'awaiting_furnished_choice':
+                    # This block handles the response to the "Is your apartment furnished?" question.
+                    if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply':
+                        # Ensure button_id and selected_title are fresh for this specific step handling
+                        button_id = message['reply']['buttons_reply'].get('id')
+                        button_title = message['reply']['buttons_reply'].get('title') # For logging or fallback
+                        logging.info(f"Interactive flow: User {sender} at step {current_step} pressed button {button_id} ('{button_title}')")
+
+                        if button_id == 'button_id4': # "Yes, furnished"
+                            send_furnished_apartment_survey_message(sender, language=current_language)
+                            if sender in interactive_flow_states: # Check before deleting
+                                del interactive_flow_states[sender]
+                            logging.info(f"Interactive flow for {sender} (furnished branch) concluded by sending survey link.")
+                            return jsonify(status='success_interactive_handled_survey_sent'), 200
+                        elif button_id == 'button_id5': # "No, unfurnished"
+                            send_unfurnished_apartment_survey_message(sender, language=current_language)
+                            if sender in interactive_flow_states: # Check before deleting
+                                del interactive_flow_states[sender]
+                            logging.info(f"Interactive flow for {sender} (unfurnished branch) concluded by sending survey link.")
+                            return jsonify(status='success_interactive_handled_survey_sent'), 200
+                        else:
+                            # This 'else' handles an unexpected button_id for the 'awaiting_furnished_choice' step.
+                            logging.warning(f"Interactive flow: User {sender} at step {current_step} pressed an unknown button ID: {button_id}")
+                            response_text = "Sorry, I didn't understand that selection. Please choose one of the provided options."
+                            if current_language == 'ar':
+                                response_text = "عذراً، لم أفهم هذا الاختيار. الرجاء اختيار أحد الخيارات المتاحة."
+                            send_whatsapp_message(sender, response_text)
+                            # Optionally resend the furnished_query_message to show the correct buttons again
+                            send_furnished_query_message(sender, language=current_language)
+                            return jsonify(status='success_interactive_reprompted_unknown_option'), 200
+                    else: # User sent something other than a button reply at this step (e.g., text)
+                        logging.info(f"Interactive flow: User {sender} at step {current_step} sent a non-button reply. Reprompting.")
+                        response_text = "Please make a selection using the buttons provided for whether the apartment is furnished or not."
+                        if current_language == 'ar':
+                            response_text = "الرجاء تحديد اختيارك باستخدام الأزرار المتوفرة لتحديد ما إذا كانت الشقة مؤثثة أم لا."
+                        send_whatsapp_message(sender, response_text)
+                        # Resend the furnished_query_message to show the buttons again
+                        send_furnished_query_message(sender, language=current_language)
+                        return jsonify(status='success_interactive_reprompted_text_instead_of_button'), 200
+
+                elif current_step == 'awaiting_city_choice' and selected_row_id:
+                    response_text = f"You selected {selected_title}. Our team will contact you about rentals in this city."
+                    if current_language == 'ar':
+                        response_text = f"لقد اخترت {selected_title}. سيقوم فريقنا بالتواصل معك بخصوص الإيجارات في هذه المدينة."
+                    send_whatsapp_message(sender, response_text)
+                    del interactive_flow_states[sender]
+                    return jsonify(status='success_interactive_handled'), 200
+
+                # Handle text messages during an active interactive flow
+                elif msg_type == 'text' and body_text_if_any:
+                    # User sent text instead of clicking a button/list
+                    response_text = "Please make a selection using the buttons or list provided."
+                    if current_language == 'ar':
+                        response_text = "الرجاء تحديد اختيارك باستخدام الأزرار أو القائمة المتوفرة."
+                    send_whatsapp_message(sender, response_text)
+                    # Optionally, resend the last interactive message.
+                    # This requires storing the type of the last message or the function to call.
+                    # For now, a simple reprompt. Or could exit: del interactive_flow_states[sender]
+                    # Example resend (needs more robust state):
+                    # if interactive_flow_states[sender].get('last_message_type') == 'initial_greeting':
+                    #    send_initial_greeting_message(sender, language=current_language)
+                    return jsonify(status='success_interactive_reprompted_text_instead_of_button'), 200
+
+                # If the reply type (button/list) or step wasn't handled above within the interactive flow,
+                # it might be an old message or an unexpected interaction.
+                # We set body_for_fallback earlier, so it can proceed to RAG if needed.
+                # However, if it was a button/list reply meant for the interactive flow but wasn't handled,
+                # it's better to prompt again or exit the flow.
+                elif msg_type == 'reply' and (button_id or selected_row_id): # Unhandled button/list reply in flow
+                    logging.warning(f"User {sender} sent unhandled reply in step {current_step}. ButtonID: {button_id}, ListID: {selected_row_id}")
+                    response_text = "Sorry, I encountered an issue with that selection. Let's try starting over."
+                    if current_language == 'ar':
+                       response_text = "عذراً، واجهت مشكلة مع هذا الاختيار. دعنا نحاول البدء من جديد."
+                    send_whatsapp_message(sender, response_text)
+                    send_initial_greeting_message(sender, language=current_language)
+                    interactive_flow_states[sender] = {'step': 'awaiting_initial_choice', 'language': current_language}
+                    return jsonify(status='success_interactive_reset'), 200
+
+
+            # --- START: EXISTING "SELL PROPERTY" FLOW LOGIC ---
+            # This existing flow should only trigger if not in the new interactive_flow
+            if not user_in_interactive_flow and sender in sell_flow_states:
                 state_info = sell_flow_states[sender]
                 current_state = state_info.get('state')
                 user_data = state_info.get('data', {})
@@ -1149,27 +1349,123 @@ def handle_new_messages():
                     del sell_flow_states[sender]
                 continue
 
-            body_for_fallback = None
+            # --- IF NOT IN ANY FLOW, CHECK FOR GREETINGS TO START INTERACTIVE FLOW ---
+            # Or, if it fell through the interactive flow (e.g. user selected "Other inquiries")
 
-            if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply':
+            # Determine body_for_fallback if not already set by interactive flow logic
+            # This is crucial for the RAG/LLM part
+            if body_for_fallback is None: # Was not set by the interactive flow logic
+                if msg_type == 'text':
+                    body_for_fallback = message.get('text', {}).get('body', '').strip()
+                elif msg_type == 'reply': # An unhandled reply type or one that fell through
+                    reply_content = message.get('reply', {})
+                    button_title = reply_content.get('buttons_reply', {}).get('title')
+                    list_title = reply_content.get('list_reply', {}).get('title')
+                    body_for_fallback = button_title or list_title or "" # Use title if available
+                elif msg_type == 'image' or msg_type == 'video':
+                    body_for_fallback = f"[User sent a {msg_type}]"
+                    if message.get('media', {}).get('caption'):
+                        body_for_fallback += f" with caption: {message['media']['caption']}"
+                elif msg_type == 'audio':
+                    # (Keep existing audio transcription logic here)
+                    media_url = message.get('media', {}).get('url')
+                    if media_url and openai_client:
+                        try:
+                            audio_response = requests.get(media_url)
+                            audio_response.raise_for_status()
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_audio_file:
+                                tmp_audio_file.write(audio_response.content)
+                                tmp_audio_file_path = tmp_audio_file.name
+
+                            transcript = openai_client.audio.transcriptions.create(
+                                model="whisper-1", file=open(tmp_audio_file_path, "rb")
+                            )
+                            body_for_fallback = transcript.text
+                            os.remove(tmp_audio_file_path)
+                        except Exception as e:
+                            logging.error(f"Error during audio transcription: {e}")
+                            body_for_fallback = "[Audio transcription failed.]"
+                    else:
+                        body_for_fallback = "[Audio received, but could not be transcribed.]"
+                # else: body_for_fallback remains None or its previously set value
+
+            if not user_in_interactive_flow and not (sender in sell_flow_states) and body_for_fallback:
+                # Using body_text_if_any for greeting check, as it's cleaner (already extracted text part)
+                # If body_text_if_any is empty (e.g. image message), it won't be a greeting.
+                current_text_for_greeting_check = body_text_if_any.strip().lower()
+                greetings = ["hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "مرحبا", "السلام عليكم", "هلا", "هاي"]
+                # Check for exact match or if the text *starts with* a greeting (for greetings longer than 2 chars)
+                is_greeting = any(greet == current_text_for_greeting_check for greet in greetings) or \
+                              any(current_text_for_greeting_check.startswith(greet) for greet in greetings if len(greet) > 2)
+
+                if is_greeting:
+                    logging.info(f"User {sender} sent a greeting: '{current_text_for_greeting_check}'. Starting interactive flow in {current_language}.")
+                    send_initial_greeting_message(sender, language=current_language)
+                    interactive_flow_states[sender] = {'step': 'awaiting_initial_choice', 'language': current_language}
+                    return jsonify(status='success_interactive_started'), 200
+
+            # --- FALLBACK to existing command/RAG logic ---
+            # Ensure body_for_fallback is set for RAG if message wasn't handled by interactive flow and didn't start one.
+            # The RAG logic should only run if the message was not fully processed by an interactive flow.
+
+            if not (sender and body_for_fallback): # Check if sender and body_for_fallback are valid
+                # This check might be redundant if the message was already handled and returned,
+                # but it's a safeguard.
+                if msg_type == 'reply' and message.get('reply', {}).get('type') == 'list_reply' and not (sender in sell_flow_states or user_in_interactive_flow) :
+                     logging.warning(f"Received list_reply from {sender} outside of any active flow. Ignoring.")
+                elif not body_for_fallback: # If body_for_fallback is still empty or None
+                     logging.warning(f"Webhook ignored: no sender or body_for_fallback. Message Type: {msg_type}, Message: {message}")
+                continue # Skip to next message in loop if this one is not processable
+
+            # The rest of the original /hook logic (global pause, RAG, etc.) follows here.
+            # It will use 'body_for_fallback' as the user's message content.
+            # Make sure the existing 'if button_id and button_id.endswith('button_1_id'):'
+            # for the old sell_flow is correctly placed or adapted if it needs to be outside
+            # the new interactive flow logic entirely. The current placement of "SELL PROPERTY" flow
+            # check (if not user_in_interactive_flow and sender in sell_flow_states) is correct.
+
+            # The original button check for "sell_flow_states" was:
+            # if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply':
+            #    ...
+            #    if button_id and button_id.endswith('button_1_id'): # THIS IS FOR THE OLD FLOW
+            #        sell_flow_states[sender] = {'state': 'awaiting_seller_name', 'data': {}}
+            #        send_whatsapp_message(sender, "Great! We can certainly help with that. To start, could you please tell me your full name?")
+            #        continue
+            # This specific button ('button_1_id') needs to be differentiated from the new interactive flow buttons.
+            # For now, assuming 'button_1_id' is exclusively for the old sell flow and won't clash.
+            # If there's a general button handler, it needs to be careful.
+            # The current structure places the new interactive flow first. If it handles a message, it returns.
+            # If not, it falls through. Then the old sell_flow is checked. If that handles, it continues or returns.
+            # If neither, then the RAG logic gets body_for_fallback.
+
+            # Ensure the old sell flow button logic is handled correctly if it's not part of the new flow.
+            # The current structure:
+            # 1. New Interactive flow (if active)
+            # 2. Old Sell flow (if active and not in new interactive flow)
+            # 3. Greeting check (if not in any flow)
+            # 4. RAG/LLM (if body_for_fallback is set and not handled above)
+
+            # The original code for getting body_for_fallback from buttons for the RAG part:
+            if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply' and not user_in_interactive_flow and not (sender in sell_flow_states):
+                # This is if a button reply was NOT handled by interactive flow and NOT by sell_flow
                 button_reply_data = message['reply']['buttons_reply']
-                button_id = button_reply_data.get('id')
+                button_id = button_reply_data.get('id') # Could be from an old message or unhandled
                 button_title = button_reply_data.get('title')
-                body_for_fallback = button_title
-                logging.info(f"User {sender} clicked button: ID='{button_id}', Title='{button_title}'")
-
-                if button_id and button_id.endswith('button_1_id'):
+                # The original sell_flow button check:
+                if button_id and button_id.endswith('button_1_id'): # This is part of the old "sell property" initiation
                     sell_flow_states[sender] = {'state': 'awaiting_seller_name', 'data': {}}
                     send_whatsapp_message(sender, "Great! We can certainly help with that. To start, could you please tell me your full name?")
-                    continue
+                    continue # Handled by starting the old sell_flow
+                # If it's another button not handled by any flow, its title goes to RAG
+                body_for_fallback = button_title
+                logging.info(f"User {sender} clicked unhandled button: ID='{button_id}', Title='{button_title}'. Passing title to RAG.")
 
-            elif msg_type == 'text':
-                body_for_fallback = message.get('text', {}).get('body')
-            elif msg_type == 'image' or msg_type == 'video':
-                body_for_fallback = f"[User sent a {msg_type}]"
-                if message.get('media', {}).get('caption'):
-                    body_for_fallback += f" with caption: {message['media']['caption']}"
-            elif msg_type == 'audio':
+
+            # Ensure audio transcription is only done if body_for_fallback is not already set
+            # The current logic sets body_for_fallback from various sources. If it's still None, then try audio.
+            # This seems fine.
+
+            if msg_type == 'audio' and not body_for_fallback: # Only transcribe if not already processed
                 media_url = message.get('media', {}).get('url')
                 if media_url and openai_client:
                     try:

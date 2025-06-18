@@ -120,11 +120,23 @@ def send_interactive_button_message(to, message_data):
 
     buttons_payload = []
     for btn in message_data.get('buttons', []):
-        buttons_payload.append({
-            "type": "quick_reply",
+        button_type = btn.get('type', 'quick_reply') # Default to quick_reply if not specified
+        current_button = {
+            "type": button_type,
             "title": btn.get('title'),
             "id": btn.get('id')
-        })
+        }
+        if button_type == 'url':
+            if not btn.get('url'):
+                logging.error(f"URL button for interactive message to {to} is missing 'url' field. Skipping button: {btn.get('title')}")
+                continue # Skip this button
+            current_button['url'] = btn.get('url')
+
+        buttons_payload.append(current_button)
+
+    if not buttons_payload: # Check if any valid buttons were added
+        logging.error(f"Attempted to send interactive button message to {to} with no valid buttons after processing.")
+        return False
 
     payload = {
         "to": to,
@@ -147,11 +159,7 @@ def send_interactive_button_message(to, message_data):
     if footer_text:
         payload['footer'] = {"text": footer_text}
 
-    if not buttons_payload:
-        logging.error(f"Attempted to send interactive button message to {to} with no buttons.")
-        return False
     payload['action'] = {"buttons": buttons_payload}
-
 
     logging.info(f"Attempting to send interactive button message to {to}. Final payload (before sending):")
     logging.info(json.dumps(payload, indent=2))
@@ -252,3 +260,220 @@ def send_interactive_list_message(to, message_data):
     else:
         logging.error(f"Failed to send interactive list message to {to}. Response: {response}")
         return False
+
+# --- Translation Helper and New Message Functions ---
+
+def _get_translated_text(key_path, language, text_map, default_value=None):
+    """
+    Retrieves translated text from a nested dictionary structure.
+    key_path: A string or list representing the path to the desired text, e.g., "body" or ['buttons', 0, 'title'].
+    language: The language code, e.g., 'ar' or 'en'.
+    text_map: The dictionary containing translations.
+    default_value: Value to return if the key_path or language is not found.
+    """
+    try:
+        lang_map = text_map.get(language, text_map.get('en', {})) # Fallback to 'en' if language not found
+
+        current_level = lang_map
+        if isinstance(key_path, str):
+            key_path = [key_path]
+
+        for key in key_path:
+            if isinstance(current_level, dict):
+                current_level = current_level[key]
+            elif isinstance(current_level, list) and isinstance(key, int):
+                current_level = current_level[key]
+            else:
+                raise KeyError(f"Invalid path component: {key} for data type: {type(current_level)}")
+        return current_level
+    except (KeyError, IndexError) as e:
+        logging.warning(f"Translation key path '{'.'.join(map(str, key_path))}' not found for language '{language}'. Error: {e}. Returning default.")
+        # Try to get the default from the 'en' map if it was a specific language request that failed
+        if language != 'en':
+            try:
+                en_map = text_map.get('en', {})
+                current_level = en_map
+                for key in key_path:
+                    if isinstance(current_level, dict):
+                        current_level = current_level[key]
+                    elif isinstance(current_level, list) and isinstance(key, int):
+                        current_level = current_level[key]
+                    else:
+                        raise KeyError
+                return current_level
+            except (KeyError, IndexError):
+                logging.warning(f"Fallback translation key path '{'.'.join(map(str, key_path))}' also not found in 'en' map.")
+        return default_value
+
+
+initial_greeting_text_map = {
+    'ar': {
+        'header': "هلا ! أنا مساعد من شركة عوجا لإدارة الأملاك",
+        'body': "كيف ممكن أخدمك اليوم؟",
+        'footer': "أضغط لتختار:",
+        'buttons': [
+            {'id': 'button_id1', 'title': "أملك شقة حابي أشغلها", 'type': 'quick_reply'},
+            {'id': 'button_id2', 'title': "ابي أستاجر شقة", 'type': 'quick_reply'},
+            {'id': 'button_id3', 'title': "أستفسارات أخرى", 'type': 'quick_reply'}
+        ]
+    },
+    'en': {
+        'header': "Hello! I am an assistant from Al Awja Property Management.",
+        'body': "How can I help you today?",
+        'footer': "Click to choose:",
+        'buttons': [
+            {'id': 'button_id1', 'title': "I own an apartment and want to operate it", 'type': 'quick_reply'},
+            {'id': 'button_id2', 'title': "I want to rent an apartment", 'type': 'quick_reply'},
+            {'id': 'button_id3', 'title': "Other inquiries", 'type': 'quick_reply'}
+        ]
+    }
+}
+
+def send_initial_greeting_message(to, language='ar'):
+    """Sends the initial greeting interactive message."""
+    texts = initial_greeting_text_map.get(language, initial_greeting_text_map['en']) # Fallback to English
+
+    message_data = {
+        'header': texts['header'],
+        'body': texts['body'],
+        'footer': texts['footer'],
+        'buttons': texts['buttons']
+    }
+    logging.info(f"Sending initial greeting message to {to} in {language}.")
+    return send_interactive_button_message(to, message_data)
+
+furnished_query_text_map = {
+    'ar': {
+        'header': "نتشرف بيك!",
+        'body': "بس حابين نعرف اذا هي مؤثثة(مفروشة) أو لا؟",
+        'footer': "أضغط لتختار:",
+        'buttons': [
+            {"type": "quick_reply", "title": "نعم مؤثثة", "id": "button_id4"},
+            {"type": "quick_reply", "title": "لا غير مؤثثة", "id": "button_id5"}
+        ]
+    },
+    'en': {
+        'header': "We are honored to have you!",
+        'body': "We'd just like to know if it's furnished or not?",
+        'footer': "Click to choose:",
+        'buttons': [
+            {"type": "quick_reply", "title": "Yes, furnished", "id": "button_id4"},
+            {"type": "quick_reply", "title": "No, unfurnished", "id": "button_id5"}
+        ]
+    }
+}
+
+def send_furnished_query_message(to, language='ar'):
+    """Sends a message asking if the user's apartment is furnished."""
+    texts = furnished_query_text_map.get(language, furnished_query_text_map['en'])
+
+    message_data = {
+        'header': texts['header'],
+        'body': texts['body'],
+        'footer': texts['footer'],
+        'buttons': texts['buttons']
+    }
+    logging.info(f"Sending furnished query message to {to} in {language}.")
+    return send_interactive_button_message(to, message_data)
+
+furnished_apartment_survey_text_map = {
+    'ar': {
+        'header': "الرجاء ملء الاستبيان",
+        'body': "عشان نقدر نخدمك ممكن تملى الإستبيان؟",
+        'footer': "أضغط لفتح الرابط:",
+        'buttons': [{"type": "url", "title": "استبيان الشقق المؤثثة", "id": "button_id7", "url": "https://form.typeform.com/to/eFGv4yhC"}]
+    },
+    'en': {
+        'header': "Please fill out the survey",
+        'body': "So we can serve you, could you please fill out the survey?",
+        'footer': "Click to open the link:",
+        'buttons': [{"type": "url", "title": "Furnished Apartments Survey", "id": "button_id7", "url": "https://form.typeform.com/to/eFGv4yhC"}]
+    }
+}
+
+def send_furnished_apartment_survey_message(to, language='ar'):
+    """Sends a message with a URL button for the furnished apartment survey."""
+    texts = furnished_apartment_survey_text_map.get(language, furnished_apartment_survey_text_map['en'])
+
+    message_data = {
+        'header': texts['header'],
+        'body': texts['body'],
+        'footer': texts['footer'],
+        'buttons': texts['buttons'] # Button type is 'url', handled by send_interactive_button_message
+    }
+    logging.info(f"Sending furnished apartment survey message to {to} in {language}.")
+    return send_interactive_button_message(to, message_data)
+
+unfurnished_apartment_survey_text_map = {
+    'ar': {
+        'header': "ولا يهمك، عندنا خدمة تأثيث بمعايير فندقية وأسعار تنافسية",
+        'body': "مهندسينا خبرتهم أكثر من 8 سنوات ومنفذين فوق 500 مشروع.",
+        'footer': "فقط عبي الإستبيان:",
+        'buttons': [{"type": "url", "title": "استبيان التأثيث", "id": "button_id8", "url": "https://form.typeform.com/to/vDKXMSaQ"}]
+    },
+    'en': {
+        'header': "No worries, we have a furnishing service with hotel standards and competitive prices.",
+        'body': "Our engineers have more than 8 years of experience and have completed over 500 projects.",
+        'footer': "Just fill out the survey:",
+        'buttons': [{"type": "url", "title": "Furnishing Survey", "id": "button_id8", "url": "https://form.typeform.com/to/vDKXMSaQ"}]
+    }
+}
+
+def send_unfurnished_apartment_survey_message(to, language='ar'):
+    """Sends a message with a URL button for the unfurnished apartment/furnishing survey."""
+    texts = unfurnished_apartment_survey_text_map.get(language, unfurnished_apartment_survey_text_map['en'])
+
+    message_data = {
+        'header': texts['header'],
+        'body': texts['body'],
+        'footer': texts['footer'],
+        'buttons': texts['buttons'] # Button type is 'url'
+    }
+    logging.info(f"Sending unfurnished apartment survey message to {to} in {language}.")
+    return send_interactive_button_message(to, message_data)
+
+city_selection_text_map = {
+    'ar': {
+        'header': "إختيار المدينة",
+        'body': "في أي مدينة تبغي تحجز؟",
+        'footer': "إختار من القائمة:",
+        'list_label': "قائمة المدن السعودية",
+        'rows': [
+            {"title": "الرياض", "id": "riyadh"}, {"title": "جدة", "id": "jeddah"},
+            {"title": "الدمام", "id": "dammam"}, {"title": "مكة المكرمة", "id": "makkah"},
+            {"title": "المدينة المنورة", "id": "medina"}, {"title": "الخبر", "id": "khobar"},
+            {"title": "الظهران", "id": "dhahran"}, {"title": "تبوك", "id": "tabuk"},
+            {"title": "بريدة", "id": "buraidah"}, {"title": "حائل", "id": "hail"}
+        ]
+    },
+    'en': {
+        'header': "Select City",
+        'body': "In which city do you want to book?",
+        'footer': "Choose from the list:",
+        'list_label': "List of Saudi Cities",
+        'rows': [
+            {"title": "Riyadh", "id": "riyadh"}, {"title": "Jeddah", "id": "jeddah"},
+            {"title": "Dammam", "id": "dammam"}, {"title": "Makkah", "id": "makkah"},
+            {"title": "Medina", "id": "medina"}, {"title": "Khobar", "id": "khobar"},
+            {"title": "Dhahran", "id": "dhahran"}, {"title": "Tabuk", "id": "tabuk"},
+            {"title": "Buraidah", "id": "buraidah"}, {"title": "Hail", "id": "hail"}
+        ]
+    }
+}
+
+def send_city_selection_message(to, language='ar'):
+    """Sends an interactive list message for city selection."""
+    texts = city_selection_text_map.get(language, city_selection_text_map['en'])
+
+    message_data = {
+        'header': texts['header'],
+        'body': texts['body'],
+        'footer': texts['footer'],
+        'label': texts['list_label'], # This is the button text for opening the list
+        'sections': [{
+            # 'title': texts['list_label'], # Optional: Title for the section within the list
+            'rows': texts['rows']
+        }]
+    }
+    logging.info(f"Sending city selection list message to {to} in {language}.")
+    return send_interactive_list_message(to, message_data)
