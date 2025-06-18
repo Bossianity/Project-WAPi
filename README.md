@@ -27,17 +27,17 @@ This feature allows for administrative control over the bot's responsiveness dir
 
 The following commands can be sent to the bot's WhatsApp number:
 
-*   `bot pause all`
+*   `stop all`
     *   Pauses the bot globally. It will stop responding to all users.
-*   `bot resume all`
+*   `start all`
     *   Resumes the bot globally and clears all specific conversation pauses.
-*   `bot pause <target_user_id>`
+*   `stop <target_user_id>`
     *   Pauses the bot for a specific user. Replace `<target_user_id>` with the user's WhatsApp ID (e.g., `11234567890@s.whatsapp.net` or just `+11234567890` - the exact format added to the pause list will be what the command provides, ensure it matches the `sender` ID format seen by the bot, which is typically `xxxxxxxxxxx@s.whatsapp.net`).
-*   `bot resume <target_user_id>`
+*   `start <target_user_id>`
     *   Resumes the bot for a specific user.
 
 **Command Case Sensitivity:**
-*   The command keywords (e.g., "bot pause all") are **case-insensitive**. So, `bot pause all`, `Bot Pause All`, or `BOT PAUSE ALL` will all work.
+*   The command keywords (e.g., "stop all") are **case-insensitive**. So, `stop all`, `Stop All`, or `STOP ALL` will all work.
 *   The `<target_user_id>` is treated as **case-sensitive** by the system when adding or removing from the pause list. However, WhatsApp IDs themselves are typically numbers and not case-sensitive in nature.
 
 ### Access Control
@@ -46,24 +46,24 @@ The following commands can be sent to the bot's WhatsApp number:
 
 ### Behavior
 
-*   **Global Pause (`bot pause all`):**
+*   **Global Pause (`stop all`):**
     *   When activated, the bot will stop processing new messages for responses for all users.
     *   Incoming messages will still be received by the webhook and logged by the system, but no response will be generated or sent back to any user.
-    *   The user issuing the `bot pause all` command will receive a confirmation: "Bot is now globally paused."
-*   **Global Resume (`bot resume all`):**
+    *   The user issuing the `stop all` command will receive a confirmation: "Bot is now globally paused."
+*   **Global Resume (`start all`):**
     *   The bot resumes normal message processing and response generation for all users.
     *   This command also clears any specific conversation pauses that were previously set. All users will be able to interact with the bot again.
-    *   The user issuing the `bot resume all` command will receive a confirmation: "Bot is now globally resumed. All specific conversation pauses have been cleared."
-*   **Specific Conversation Pause (`bot pause <target_user_id>`):**
+    *   The user issuing the `start all` command will receive a confirmation: "Bot is now globally resumed. All specific conversation pauses have been cleared."
+*   **Specific Conversation Pause (`stop <target_user_id>`):**
     *   The bot will stop processing messages for responses only from the specified `<target_user_id>`.
     *   Messages from this paused user will be logged but not responded to.
     *   Other users are unaffected and can continue to interact with the bot unless a global pause is also active.
     *   The user issuing the command (e.g., an admin) will receive a confirmation like: "Bot interactions will be paused for: <target_user_id>".
-    *   If the command format is invalid (e.g., no `<target_user_id>` provided), the issuer receives: "Invalid command format. Use: bot pause <target_user_id>".
-*   **Specific Conversation Resume (`bot resume <target_user_id>`):**
+    *   If the command format is invalid (e.g., no `<target_user_id>` provided), the issuer receives: "Invalid command format. Use: stop <target_user_id>".
+*   **Specific Conversation Resume (`start <target_user_id>`):**
     *   The bot will resume processing messages and responding to the specified `<target_user_id>`.
     *   The user issuing the command will receive a confirmation: "Bot interactions will be resumed for: <target_user_id>".
-    *   If the command format is invalid, the issuer receives: "Invalid command format. Use: bot resume <target_user_id>".
+    *   If the command format is invalid, the issuer receives: "Invalid command format. Use: start <target_user_id>".
 
 ### State Persistence
 

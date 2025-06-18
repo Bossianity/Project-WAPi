@@ -7,26 +7,26 @@ import requests
 import tempfile
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 
-from interactive_messages import initial_greeting_message, owner_options_message, furnished_apartment_message, unfurnished_apartment_message, tenant_options_message
+# interactive_messages imports are no longer needed here as script.py handles component fetching.
 
-# Load environment variables for Whapi.Cloud
-WHAPI_API_URL = os.getenv('API_URL')
-WHAPI_TOKEN = os.getenv('API_TOKEN')
+# Environment variables are no longer loaded directly in this module.
+# API_URL and API_TOKEN will be passed as parameters.
 
 # Standard logging calls (logging.info, logging.error, etc.) will be used.
 # These will inherit the basicConfig from the main script.py if this module is imported,
 # or use default Python logging if run standalone (though it's not designed for standalone).
 
-def send_whapi_request(endpoint, params=None, method='POST', is_media=False, timeout=30):
+def send_whapi_request(api_url, api_token, endpoint, params=None, method='POST', is_media=False, timeout=30):
     """
     Generic function to send requests to the Whapi.Cloud API with retry logic.
+    api_url and api_token are passed as arguments.
     """
-    if not WHAPI_API_URL or not WHAPI_TOKEN:
-        logging.error("WHAPI API_URL or API_TOKEN not configured in environment variables.")
+    if not api_url or not api_token:
+        logging.error("API_URL or API_TOKEN not provided to send_whapi_request.")
         return None
 
-    headers = {'Authorization': f"Bearer {WHAPI_TOKEN}"}
-    url = f"{WHAPI_API_URL}/{endpoint}"
+    headers = {'Authorization': f"Bearer {api_token}"}
+    url = f"{api_url}/{endpoint}"
     max_retries = 3
 
     for attempt in range(max_retries):
@@ -60,14 +60,14 @@ def send_whapi_request(endpoint, params=None, method='POST', is_media=False, tim
                 return None
     return None
 
-def send_whatsapp_message(to, text):
+def send_whatsapp_message(to, text, api_url, api_token):
     """Sends a text message using the Whapi.Cloud API."""
     endpoint = 'messages/text'
     payload = {'to': to, 'body': text}
-    response = send_whapi_request(endpoint, payload)
+    response = send_whapi_request(api_url, api_token, endpoint, payload)
     return response and response.get('sent')
 
-def send_whatsapp_image_message(to, caption, image_url):
+def send_whatsapp_image_message(to, caption, image_url, api_url, api_token):
     """Downloads an image from a URL and sends it via the Whapi.Cloud API."""
     try:
         image_response = requests.get(image_url, stream=True, timeout=20)
@@ -89,17 +89,19 @@ def send_whatsapp_image_message(to, caption, image_url):
     }
 
     try:
-        response = send_whapi_request(endpoint, payload, is_media=True)
+        response = send_whapi_request(api_url, api_token, endpoint, payload, is_media=True)
     finally:
         os.remove(tmp_file_path)
 
     return response and response.get('sent')
 
-def set_webhook():
+def set_webhook(bot_url, api_url, api_token):
     """Sets the bot's webhook URL with Whapi.Cloud on startup."""
-    bot_url = os.getenv('BOT_URL')
     if not bot_url:
-        logging.warning("BOT_URL environment variable not set. Cannot set webhook.")
+        logging.warning("BOT_URL not provided to set_webhook. Cannot set webhook.")
+        return
+    if not api_url or not api_token:
+        logging.error("API_URL or API_TOKEN not provided to set_webhook.")
         return
 
     logging.info(f"Attempting to set webhook to: {bot_url}")
@@ -109,13 +111,13 @@ def set_webhook():
             'events': ['messages', 'statuses']
         }
     }
-    response = send_whapi_request('settings', settings, method='PATCH', timeout=15)
+    response = send_whapi_request(api_url, api_token, 'settings', settings, method='PATCH', timeout=15)
     if response:
         logging.info("Webhook set successfully")
     else:
         logging.error("Failed to set webhook")
 
-def send_interactive_button_message(to, message_data):
+def send_interactive_button_message(to, message_data, api_url, api_token):
     """
     Sends an interactive message with buttons, precisely matching the
     working payload structure from the Whapi documentation.
@@ -164,9 +166,12 @@ def send_interactive_button_message(to, message_data):
 
 
     logging.info(f"Attempting to send interactive button message to {to}. Final payload (before sending):")
-    logging.info(json.dumps(payload, indent=2))
+    logging.info(json.dumps(payload, indent=2)) # This logging is fine as it's payload for this specific function
 
-    response = send_whapi_request(endpoint, payload)
+    response = send_whapi_request(api_url, api_token, endpoint, payload)
+    logging.info(json.dumps(payload, indent=2)) # This logging is fine
+
+    response = send_whapi_request(api_url, api_token, endpoint, payload)
 
     if response and response.get('sent'):
         logging.info(f"Successfully sent interactive button message to {to}.")
@@ -263,68 +268,7 @@ def send_interactive_list_message(to, message_data):
         logging.error(f"Failed to send interactive list message to {to}. Response: {response}")
         return False
 
-
-def translate_payload(payload, language):
-    """
-    Recursively translates a message payload dictionary to the specified language.
-    It looks for dictionaries with 'ar' and 'en' keys and replaces them with
-    the value corresponding to the given language.
-    """
-    if isinstance(payload, dict):
-        if 'ar' in payload and 'en' in payload and len(payload) == 2:
-            return payload.get(language, payload.get('en')) # Default to English if lang not found
-
-        new_dict = {}
-        for key, value in payload.items():
-            new_dict[key] = translate_payload(value, language)
-        return new_dict
-    elif isinstance(payload, list):
-        return [translate_payload(item, language) for item in payload]
-    else:
-        return payload
-
-message_templates = {
-    "initial_greeting": initial_greeting_message,
-    "owner_options": owner_options_message,
-    "furnished_apartment": furnished_apartment_message,
-    "unfurnished_apartment": unfurnished_apartment_message,
-    "tenant_options": tenant_options_message,
-}
-
-def send_custom_interactive_message(to: str, message_name: str, language: str):
-    """
-    Sends a custom interactive message (button or list) using a predefined template.
-    The message is translated to the specified language before sending.
-    """
-    if not WHAPI_API_URL or not WHAPI_TOKEN:
-        logging.error("WHAPI API_URL or API_TOKEN not configured. Cannot send message.")
-        return False
-
-    template = message_templates.get(message_name)
-    if not template:
-        logging.error(f"Unknown message template name: {message_name}")
-        return False
-
-    # Deep copy the template to avoid modifying the original
-    message_payload = json.loads(json.dumps(template))
-
-    # Translate the payload
-    translated_payload = translate_payload(message_payload, language)
-
-    # Add the 'to' field
-    translated_payload['to'] = to
-
-    # The 'type' and 'view_once' are already part of the template
-
-    endpoint = 'messages/interactive'
-    logging.info(f"Attempting to send custom interactive message '{message_name}' to {to} in '{language}'.")
-    logging.debug(f"Translated payload for '{message_name}': {json.dumps(translated_payload, indent=2, ensure_ascii=False)}")
-
-    response = send_whapi_request(endpoint, translated_payload, method='POST')
-
-    if response and response.get('sent'):
-        logging.info(f"Successfully sent custom interactive message '{message_name}' to {to}.")
-        return True
-    else:
-        logging.error(f"Failed to send custom interactive message '{message_name}' to {to}. Response: {response}")
-        return False
+# The following functions are no longer needed as this logic is centralized in script.py:
+# - translate_payload
+# - message_templates dictionary
+# - send_custom_interactive_message

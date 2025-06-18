@@ -80,9 +80,18 @@ for var_name in CRITICAL_ENV_VARS:
         logging.warning(f"Environment Variable Check: {var_name} - Not Set")
 # --- End Environment Variable Check ---
 
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-PROPERTY_SHEET_ID = os.getenv('PROPERTY_SHEET_ID')
-PROPERTY_SHEET_NAME = os.getenv('PROPERTY_SHEET_NAME', 'Properties')
+APP_CONFIG = {
+    "OPENAI_API_KEY": os.getenv('OPENAI_API_KEY'),
+    "GEMINI_API_KEY": os.getenv('GEMINI_API_KEY'),
+    "API_URL": os.getenv('API_URL'), # For Whapi
+    "API_TOKEN": os.getenv('API_TOKEN'), # For Whapi
+    "BOT_URL": os.getenv('BOT_URL'),
+    "PROPERTY_SHEET_ID": os.getenv('PROPERTY_SHEET_ID'),
+    "PROPERTY_SHEET_NAME": os.getenv('PROPERTY_SHEET_NAME', 'Properties'),
+    "GOOGLE_SHEETS_CREDENTIALS": os.getenv('GOOGLE_SHEETS_CREDENTIALS'), # Used by property_handler, rag_handler
+    "GOOGLE_SYNC_SECRET_TOKEN": os.getenv('GOOGLE_SYNC_SECRET_TOKEN'),
+    # Add any other direct os.getenv calls from script.py if they were missed.
+}
 
 # --- Global Pause Feature ---
 is_globally_paused = False
@@ -229,15 +238,15 @@ BASE_PROMPT = (
 
 # ─── AI Model and API Client Initialization ────────────────────────────────────
 AI_MODEL = None
-if OPENAI_API_KEY:
+if APP_CONFIG["OPENAI_API_KEY"]:
     try:
-        AI_MODEL = ChatOpenAI(model='gpt-4o', openai_api_key=OPENAI_API_KEY, temperature=0.4)
+        AI_MODEL = ChatOpenAI(model='gpt-4o', openai_api_key=APP_CONFIG["OPENAI_API_KEY"], temperature=0.4)
         logging.info("ChatOpenAI model initialized successfully.")
     except Exception as e:
         logging.error(f"Failed to initialize ChatOpenAI model: {e}", exc_info=True)
         AI_MODEL = None # Ensure AI_MODEL is None if initialization failed
 else:
-    logging.error("OPENAI_API_KEY not found; AI responses will fail. ChatOpenAI model not initialized.")
+    logging.error("OPENAI_API_KEY not found in APP_CONFIG; AI responses will fail. ChatOpenAI model not initialized.")
 
 # ─── Flask setup ───────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -386,8 +395,11 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
 
     # Step 2: Logic Execution Based on Intent
     context_str = ""
-    if (intent == "property_search" or is_property_related_query(text)) and PROPERTY_SHEET_ID:
-        all_properties_df = property_handler.get_sheet_data()
+    if (intent == "property_search" or is_property_related_query(text)) and APP_CONFIG["PROPERTY_SHEET_ID"]:
+        # Assuming property_handler.get_sheet_data and filter_properties are adapted
+        # or don't directly need PROPERTY_SHEET_ID and PROPERTY_SHEET_NAME passed if they use os.getenv internally.
+        # For now, this subtask doesn't cover refactoring property_handler.py itself.
+        all_properties_df = property_handler.get_sheet_data() # This might need APP_CONFIG if refactored
         if not all_properties_df.empty:
             filtered_df = property_handler.filter_properties(all_properties_df, filters) if filters else all_properties_df
             if not filtered_df.empty:
@@ -468,14 +480,14 @@ def google_docs_webhook_sync():
     logging.info(f"Google Docs sync: Received request data: {json.dumps(data)}")
 
     # --- Secret Token Validation ---
-    EXPECTED_GOOGLE_TOKEN = os.getenv('GOOGLE_SYNC_SECRET_TOKEN')
+    expected_google_token_val = APP_CONFIG.get('GOOGLE_SYNC_SECRET_TOKEN')
     received_token = data.get('secretToken')
 
-    if not EXPECTED_GOOGLE_TOKEN:
-        logging.critical("Google Docs sync: GOOGLE_SYNC_SECRET_TOKEN is not set in environment. Cannot authenticate requests.")
+    if not expected_google_token_val:
+        logging.critical("Google Docs sync: GOOGLE_SYNC_SECRET_TOKEN is not set in APP_CONFIG. Cannot authenticate requests.")
         return jsonify(status="error", message="Authentication service not configured."), 500
 
-    if not received_token or received_token != EXPECTED_GOOGLE_TOKEN:
+    if not received_token or received_token != expected_google_token_val:
         logging.warning(f"Google Docs sync: Unauthorized access attempt. Received token: '{received_token}'")
         return jsonify(status="error", message="Unauthorized: Invalid or missing secret token"), 401
 
@@ -607,7 +619,7 @@ def webhook():
                         next_message_components_key_name = "tenant_options_message_components"
                     elif clicked_button_id == "button_id3": # "أستفسارات أخرى"
                         text_to_send = "سيتم التواصل معك قريبا بخصوص استفسارك." if current_language == 'ar' else "Our team will contact you shortly regarding your inquiry."
-                        send_whatsapp_message(sender, text_to_send)
+                        send_whatsapp_message(sender, text_to_send, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                         ai_action_for_history = text_to_send
                         users_in_interactive_flow.discard(sender)
                     elif clicked_button_id == "button_id4": # "نعم مؤثثة"
@@ -623,7 +635,7 @@ def webhook():
                     if clicked_list_item_id.startswith("row_id"): # City selection from list
                         city_selected = message.get('interactive', {}).get('list_reply', {}).get('title', 'the selected city')
                         text_to_send = f"شكرا لاختيارك {city_selected}. سيقوم فريقنا بالتواصل معك قريبا بخصوص طلبك في مدينة {city_selected}." if current_language == 'ar' else f"Thanks for selecting {city_selected}. Our team will contact you shortly regarding your request in {city_selected}."
-                        send_whatsapp_message(sender, text_to_send)
+                        send_whatsapp_message(sender, text_to_send, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                         ai_action_for_history = text_to_send
                         users_in_interactive_flow.discard(sender)
 
@@ -635,10 +647,10 @@ def webhook():
                         logging_msg_type = "" # For logging
 
                         if "list_action" in actual_components:
-                            success = send_interactive_list_message(sender, message_data_to_send)
+                            success = send_interactive_list_message(sender, message_data_to_send, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                             logging_msg_type = "list"
                         else:
-                            success = send_interactive_button_message(sender, message_data_to_send)
+                            success = send_interactive_button_message(sender, message_data_to_send, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                             logging_msg_type = "button"
 
                         if success:
@@ -647,7 +659,7 @@ def webhook():
                         else:
                             logging.error(f"Webhook: Failed to send interactive {logging_msg_type} message for '{next_message_components_key_name}' to {sender}. Sending text fallback.")
                             fallback_text = "عذراً، حدث خطأ ما. الرجاء المحاولة مرة أخرى لاحقاً." if current_language == 'ar' else "Sorry, something went wrong. Please try again later."
-                            send_whatsapp_message(sender, fallback_text)
+                            send_whatsapp_message(sender, fallback_text, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                             ai_action_for_history = f"[Failed to send {next_message_components_key_name}, sent text fallback: {fallback_text}]"
                             users_in_interactive_flow.discard(sender)
                     else:
@@ -680,13 +692,13 @@ def webhook():
             # --- Administrative Commands (Processed first) ---
             if normalized_body == "stop all":
                 is_globally_paused = True
-                send_whatsapp_message(sender, "Bot is now globally paused. Individually started conversations will continue.")
+                send_whatsapp_message(sender, "Bot is now globally paused. Individually started conversations will continue.", APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                 continue
             if normalized_body == "start all":
                 is_globally_paused = False
                 paused_conversations.clear()
                 active_conversations_during_global_pause.clear()
-                send_whatsapp_message(sender, "Bot is now globally resumed for all conversations.")
+                send_whatsapp_message(sender, "Bot is now globally resumed for all conversations.", APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                 continue
             if normalized_body.startswith("stop "):
                 target_user_input = normalized_body.split("stop ", 1)[1].strip()
@@ -697,7 +709,7 @@ def webhook():
                     paused_conversations.add(target_user_id)
                     active_conversations_during_global_pause.discard(target_user_id) # Remove if present
                     logging.info(f"COMMAND 'stop {target_user_input}': AFTER: paused_conversations: {paused_conversations}, active_conversations_during_global_pause: {active_conversations_during_global_pause}")
-                    send_whatsapp_message(sender, f"Bot interactions will be paused for: {target_user_id}")
+                    send_whatsapp_message(sender, f"Bot interactions will be paused for: {target_user_id}", APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                 continue
             if normalized_body.startswith("start "):
                 target_user_input = normalized_body.split("start ", 1)[1].strip()
@@ -708,11 +720,11 @@ def webhook():
                     if is_globally_paused:
                         active_conversations_during_global_pause.add(target_user_id)
                         paused_conversations.discard(target_user_id) # Ensure it's not in both
-                        send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}. Other conversations remain paused.")
+                        send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}. Other conversations remain paused.", APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                     else:
                         paused_conversations.discard(target_user_id)
                         # active_conversations_during_global_pause.discard(target_user_id) # Not strictly necessary here but good for consistency
-                        send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}")
+                        send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}", APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                     logging.info(f"COMMAND 'start {target_user_input}': AFTER: paused_conversations: {paused_conversations}, active_conversations_during_global_pause: {active_conversations_during_global_pause}")
                 continue
 
@@ -742,7 +754,7 @@ def webhook():
                 if detected_language:
                     logging.info(f"Webhook: Detected greeting '{normalized_body}' from {sender} in {detected_language}. Preparing initial_greeting_message_components.")
                     message_data_to_send = prepare_interactive_message_data(initial_greeting_message_components, detected_language)
-                    success = send_interactive_button_message(sender, message_data_to_send) # Initial greeting is buttons
+                    success = send_interactive_button_message(sender, message_data_to_send, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
 
                     ai_action_content = ""
                     if success:
@@ -752,7 +764,7 @@ def webhook():
                     else:
                         logging.error(f"Webhook: Failed to send initial_greeting_message_components to {sender} in {detected_language}. Sending text fallback.")
                         fallback_text = "عذراً، حدث خطأ ما. الرجاء المحاولة مرة أخرى لاحقاً." if detected_language == 'ar' else "Sorry, something went wrong. Please try again later."
-                        send_whatsapp_message(sender, fallback_text)
+                        send_whatsapp_message(sender, fallback_text, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                         ai_action_content = f"[Failed to send initial_greeting_message_components, sent text fallback: {fallback_text}]"
                         users_in_interactive_flow.discard(sender)
 
@@ -779,7 +791,7 @@ def webhook():
                 if gallery.get('urls'):
                     logging.info(f"Sending gallery to {sender}.")
                     for i, url in enumerate(gallery['urls']):
-                        send_whatsapp_image_message(sender, gallery['caption'] if i == 0 else "", url)
+                        send_whatsapp_image_message(sender, gallery['caption'] if i == 0 else "", url, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                         time.sleep(1.5)
                     final_model_response_for_history = f"[Sent gallery of {len(gallery['urls'])} images]"
             
@@ -788,7 +800,7 @@ def webhook():
                 final_model_response_for_history = text_content
                 chunks = split_message(text_content)
                 for chunk in chunks:
-                    send_whatsapp_message(sender, chunk)
+                    send_whatsapp_message(sender, chunk, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
                     time.sleep(1)
 
             # Append as Langchain message objects
@@ -812,14 +824,16 @@ def deferred_startup():
     time.sleep(5)
     with app.app_context():
         logging.info("Running deferred startup tasks...")
-        set_webhook()
+        set_webhook(APP_CONFIG.get("BOT_URL"), APP_CONFIG.get("API_URL"), APP_CONFIG.get("API_TOKEN"))
         logging.info("Deferred startup tasks completed.")
 
 # Initialize RAG components immediately, as they are needed for responses.
 with app.app_context():
     try:
-        embeddings_rag = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=os.getenv('OPENAI_API_KEY'))
-        vector_store_rag = initialize_vector_store()
+        # Assuming initialize_vector_store and process_document might need APP_CONFIG if they use GOOGLE_SHEETS_CREDENTIALS
+        # For now, this subtask doesn't cover refactoring rag_handler.py itself.
+        embeddings_rag = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=APP_CONFIG["OPENAI_API_KEY"])
+        vector_store_rag = initialize_vector_store() # This might need APP_CONFIG if refactored
         if vector_store_rag and embeddings_rag:
             app.config['EMBEDDINGS'] = embeddings_rag
             app.config['VECTOR_STORE'] = vector_store_rag
