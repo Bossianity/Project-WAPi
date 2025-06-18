@@ -34,7 +34,8 @@ load_dotenv()
 
 IS_APP_INITIALIZED = False
 STALE_MESSAGE_THRESHOLD_SECONDS = 90
-is_globally_paused = True
+# FIX: Changed default to False to make the bot responsive on startup.
+is_globally_paused = False
 paused_conversations = set()
 active_conversations_during_global_pause = set()
 users_in_interactive_flow = set()
@@ -86,7 +87,9 @@ def get_llm_response(user_message, sender_id):
         context = ""
         if current_app.config.get('VECTOR_STORE') and current_app.config.get('EMBEDDINGS'):
             try:
-                context = query_vector_store(user_message, current_app.config['VECTOR_STORE'], current_app.config['EMBEDDINGS'])
+                # Assuming query_vector_store might not need embeddings passed directly if they are part of the store
+                context_results = query_vector_store(user_message, current_app.config['VECTOR_STORE'])
+                context = " ".join([doc.page_content for doc in context_results])
             except Exception as e:
                 logging.warning(f"RAG query failed: {e}")
         
@@ -127,22 +130,27 @@ def is_greeting_message(text):
 
 def handle_interactive_button_click(sender, button_id):
     """Handle interactive button clicks"""
+    # FIX: Get API credentials from app config
+    api_url = current_app.config.get("API_URL")
+    api_token = current_app.config.get("API_TOKEN")
+
     try:
-        if button_id == "owner_services":
-            send_interactive_button_message(sender, owner_options_message_components)
-        elif button_id == "guest_booking":
-            send_interactive_button_message(sender, tenant_options_message_components)
-        elif button_id == "furnished_apartment":
-            send_interactive_button_message(sender, furnished_apartment_message_components)
-        elif button_id == "unfurnished_apartment":
-            send_interactive_button_message(sender, unfurnished_apartment_message_components)
+        # Pass api_url and api_token to the sending functions
+        if button_id == "button_id1": # I own an apartment
+            send_interactive_button_message(sender, owner_options_message_components, api_url, api_token)
+        elif button_id == "button_id2": # I want to rent
+             send_interactive_list_message(sender, tenant_options_message_components, api_url, api_token)
+        elif button_id == "button_id4": # Furnished
+            send_interactive_button_message(sender, furnished_apartment_message_components, api_url, api_token)
+        elif button_id == "button_id5": # Unfurnished
+            send_interactive_button_message(sender, unfurnished_apartment_message_components, api_url, api_token)
         else:
             # Handle other button IDs or fall back to LLM
             response = get_llm_response(f"User clicked button: {button_id}", sender)
-            send_whatsapp_message(sender, response)
+            send_whatsapp_message(sender, response, api_url, api_token)
     except Exception as e:
         logging.error(f"Error handling button click {button_id} for {sender}: {e}")
-        send_whatsapp_message(sender, "عذراً، حدث خطأ. يرجى المحاولة مرة أخرى.")
+        send_whatsapp_message(sender, "عذراً، حدث خطأ. يرجى المحاولة مرة أخرى.", api_url, api_token)
 
 # --- Persona Configuration ---
 PERSONA_NAME = "مساعد"
@@ -207,6 +215,10 @@ def webhook():
         logging.warning("Webhook received before app is fully initialized. Responding with 503.")
         return jsonify(status="error", message="Service is initializing"), 503
 
+    # FIX: Get API credentials from app config to use in this scope
+    api_url = current_app.config.get("API_URL")
+    api_token = current_app.config.get("API_TOKEN")
+
     try:
         data = request.json or {}
         incoming_messages = data.get('messages', [])
@@ -256,30 +268,42 @@ def webhook():
 
             # Handle Admin Commands
             normalized_body = body_for_fallback.lower().strip()
+            admin_sender_id = sender
             
+            # FIX: Added feedback messages for admin commands
             if normalized_body == "stop all":
                 is_globally_paused = True
                 active_conversations_during_global_pause.clear()
-                logging.info("Global pause activated by admin command")
+                logging.info(f"Global pause activated by admin command from {admin_sender_id}")
+                send_whatsapp_message(admin_sender_id, "Bot is now globally paused.", api_url, api_token)
                 continue
             elif normalized_body == "start all":
                 is_globally_paused = False
                 paused_conversations.clear()
                 active_conversations_during_global_pause.clear()
-                logging.info("Global pause deactivated by admin command")
+                logging.info(f"Global pause deactivated by admin command from {admin_sender_id}")
+                send_whatsapp_message(admin_sender_id, "Bot is now globally resumed. All specific conversation pauses have been cleared.", api_url, api_token)
                 continue
             elif normalized_body.startswith("stop "):
-                user_id = normalized_body[5:].strip()
-                paused_conversations.add(user_id)
-                active_conversations_during_global_pause.discard(user_id)
-                logging.info(f"Paused conversation for user: {user_id}")
+                user_id_to_pause = normalized_body[5:].strip()
+                if user_id_to_pause:
+                    paused_conversations.add(user_id_to_pause)
+                    active_conversations_during_global_pause.discard(user_id_to_pause)
+                    logging.info(f"Paused conversation for user: {user_id_to_pause}")
+                    send_whatsapp_message(admin_sender_id, f"Bot interactions will be paused for: {user_id_to_pause}", api_url, api_token)
+                else:
+                    send_whatsapp_message(admin_sender_id, "Invalid command format. Use: stop <target_user_id>", api_url, api_token)
                 continue
             elif normalized_body.startswith("start "):
-                user_id = normalized_body[6:].strip()
-                paused_conversations.discard(user_id)
-                if is_globally_paused:
-                    active_conversations_during_global_pause.add(user_id)
-                logging.info(f"Resumed conversation for user: {user_id}")
+                user_id_to_resume = normalized_body[6:].strip()
+                if user_id_to_resume:
+                    paused_conversations.discard(user_id_to_resume)
+                    if is_globally_paused:
+                        active_conversations_during_global_pause.add(user_id_to_resume)
+                    logging.info(f"Resumed conversation for user: {user_id_to_resume}")
+                    send_whatsapp_message(admin_sender_id, f"Bot interactions will be resumed for: {user_id_to_resume}", api_url, api_token)
+                else:
+                    send_whatsapp_message(admin_sender_id, "Invalid command format. Use: start <target_user_id>", api_url, api_token)
                 continue
 
             # Check if conversation is paused
@@ -301,12 +325,12 @@ def webhook():
             if is_greeting_message(body_for_fallback):
                 logging.info(f"Sending greeting message to {sender}")
                 try:
-                    send_interactive_button_message(sender, initial_greeting_message_components)
+                    send_interactive_button_message(sender, initial_greeting_message_components, api_url, api_token)
                     users_in_interactive_flow.add(sender)
                 except Exception as e:
                     logging.error(f"Error sending greeting to {sender}: {e}")
                     # Fallback to text message
-                    send_whatsapp_message(sender, "حياك الله! كيف ممكن أساعدك اليوم؟")
+                    send_whatsapp_message(sender, "حياك الله! كيف ممكن أساعدك اليوم؟", api_url, api_token)
                 continue
 
             # Process regular messages with LLM
@@ -320,17 +344,15 @@ def webhook():
                 if "[ACTION_SEND_IMAGE_GALLERY]" in response:
                     # Handle image gallery request
                     try:
-                        # You would implement the image sending logic here
-                        # For now, just send the response without the action tag
                         clean_response = response.replace("[ACTION_SEND_IMAGE_GALLERY]", "").strip()
                         if clean_response:
-                            send_whatsapp_message(sender, clean_response)
+                            send_whatsapp_message(sender, clean_response, api_url, api_token)
                     except Exception as e:
                         logging.error(f"Error sending image gallery to {sender}: {e}")
-                        send_whatsapp_message(sender, "عذراً، لا أستطيع إرسال الصور حالياً.")
+                        send_whatsapp_message(sender, "عذراً، لا أستطيع إرسال الصور حالياً.", api_url, api_token)
                 else:
                     # Send regular text response
-                    send_whatsapp_message(sender, response)
+                    send_whatsapp_message(sender, response, api_url, api_token)
                 
                 # Save conversation history
                 history = load_conversation_history(sender)
@@ -343,9 +365,9 @@ def webhook():
             except Exception as e:
                 logging.error(f"Error processing message from {sender}: {e}")
                 try:
-                    send_whatsapp_message(sender, "عذراً، حدث خطأ. يرجى المحاولة مرة أخرى.")
-                except:
-                    logging.error(f"Failed to send error message to {sender}")
+                    send_whatsapp_message(sender, "عذراً، حدث خطأ. يرجى المحاولة مرة أخرى.", api_url, api_token)
+                except Exception as send_err:
+                    logging.error(f"Failed to send error message to {sender}: {send_err}")
 
         return jsonify(status='success', message='Webhook processed'), 200
 
@@ -362,20 +384,20 @@ def initialize_app_state():
 
     with app.app_context():
         logging.info("Starting critical initializations in background...")
-        APP_CONFIG = {
-            "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
-            "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY"),
-            "API_URL": os.getenv("API_URL"),
-            "API_TOKEN": os.getenv("API_TOKEN"),
-            "BOT_URL": os.getenv("BOT_URL")
-        }
+        
+        # FIX: Store configs in app.config for global access
+        app.config["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+        app.config["GEMINI_API_KEY"] = os.getenv("GEMINI_API_KEY")
+        app.config["API_URL"] = os.getenv("API_URL")
+        app.config["API_TOKEN"] = os.getenv("API_TOKEN")
+        app.config["BOT_URL"] = os.getenv("BOT_URL")
 
         # Initialize AI Model
-        if APP_CONFIG["OPENAI_API_KEY"]:
+        if app.config["OPENAI_API_KEY"]:
             try:
                 AI_MODEL = ChatOpenAI(
                     model='gpt-4o', 
-                    openai_api_key=APP_CONFIG["OPENAI_API_KEY"], 
+                    openai_api_key=app.config["OPENAI_API_KEY"], 
                     temperature=0.4
                 )
                 logging.info("ChatOpenAI model initialized successfully.")
@@ -386,14 +408,15 @@ def initialize_app_state():
 
         # Initialize RAG components
         try:
-            if APP_CONFIG["OPENAI_API_KEY"]:
+            if app.config["OPENAI_API_KEY"]:
+                # Using OpenAI embeddings as per original logic
                 embeddings_rag = OpenAIEmbeddings(
                     model="text-embedding-ada-002", 
-                    openai_api_key=APP_CONFIG["OPENAI_API_KEY"]
+                    openai_api_key=app.config["OPENAI_API_KEY"]
                 )
                 vector_store_rag = initialize_vector_store()
                 
-                if vector_store_rag and embeddings_rag:
+                if vector_store_rag:
                     app.config['EMBEDDINGS'] = embeddings_rag
                     app.config['VECTOR_STORE'] = vector_store_rag
                     logging.info("RAG components initialized successfully.")
@@ -412,9 +435,8 @@ def initialize_app_state():
         try:
             time.sleep(2)
             logging.info("Running non-critical deferred startup tasks...")
-            if APP_CONFIG.get("BOT_URL") and APP_CONFIG.get("API_URL") and APP_CONFIG.get("API_TOKEN"):
-                set_webhook(APP_CONFIG["BOT_URL"], APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
-                logging.info("Webhook set successfully.")
+            if app.config.get("BOT_URL") and app.config.get("API_URL") and app.config.get("API_TOKEN"):
+                set_webhook(app.config["BOT_URL"], app.config["API_URL"], app.config["API_TOKEN"])
             else:
                 logging.warning("Skipping webhook setup due to missing configuration.")
             logging.info("Deferred startup tasks completed.")
