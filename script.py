@@ -23,6 +23,7 @@ import property_handler
 import threading # <-- Import the threading module
 
 # Ensure other custom modules are in the same directory or accessible via PYTHONPATH
+import property_handler # Explicitly importing, was implicitly used.
 from rag_handler import (
     initialize_vector_store,
     process_document,
@@ -37,7 +38,7 @@ from google_drive_handler import (
     get_google_sheet_content
 )
 from outreach_handler import process_outreach_campaign
-from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, set_webhook, send_interactive_list_message
+from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, set_webhook, send_interactive_list_message, send_custom_interactive_message
 
 
 # ─── Load Environment and Configuration ──────────────────────────────────────
@@ -70,6 +71,40 @@ PROPERTY_SHEET_NAME = os.getenv('PROPERTY_SHEET_NAME', 'Properties')
 is_globally_paused = False
 paused_conversations = set()
 active_conversations_during_global_pause = set()
+
+# --- Interactive Flow State & Greeting Keywords ---
+users_in_interactive_flow = set() # Temporary state for users in the new interactive flow
+
+arabic_greetings = [
+    "مرحبا", "السلام عليكم", "هلا", "اهلين", "مساء الخير", "صباح الخير",
+    "السلام عليكم ورحمة الله وبركاته", "يا هلا", "مرحبتين"
+]
+english_greetings = [
+    "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+    "greetings", "howdy"
+]
+
+def detect_language_from_text(text):
+    """
+    Basic language detection based on keywords.
+    Defaults to 'ar' if no keywords are found or text is empty.
+    """
+    if not text or not isinstance(text, str):
+        return 'ar' # Default language
+    text_lower = text.lower()
+    for greeting in english_greetings:
+        if greeting in text_lower:
+            return 'en'
+    for greeting in arabic_greetings:
+        if greeting in text_lower:
+            return 'ar'
+    # Fallback if no greeting keyword is found, try to guess based on characters
+    # This is a very simple heuristic
+    if any(ord(char) > 127 for char in text): # Basic check for non-ASCII, likely Arabic
+        return 'ar'
+    # If mostly ASCII, assume English or let the content decide (defaulting to 'ar' is safer for this app)
+    return 'ar'
+
 
 # ─── Persona and AI Prompt Configuration ──────────────────────────────────
 PERSONA_NAME = "مساعد"
@@ -442,25 +477,122 @@ def webhook():
             sender = format_target_user_id(sender) # Normalize the sender ID here
 
             msg_type = message.get('type')
-            body_for_fallback = None
+            body_for_fallback = None # This will store what's saved to history or passed to LLM
+            clicked_button_id = None # Specific for button clicks
+            clicked_list_item_id = None # Specific for list selections
 
             if msg_type == 'text':
                 body_for_fallback = message.get('text', {}).get('body')
+                logging.info(f"Webhook: Received text message from {sender}: '{body_for_fallback}'")
             elif msg_type == 'image' or msg_type == 'video':
                 body_for_fallback = f"[User sent a {msg_type}]"
                 if message.get('media', {}).get('caption'):
                     body_for_fallback += f" with caption: {message['media']['caption']}"
-            
+                logging.info(f"Webhook: Received {msg_type} message from {sender}.")
+            elif msg_type == 'interactive':
+                logging.info(f"Webhook: Received interactive message from {sender}.")
+                interactive_data = message.get('interactive', {})
+                interactive_type = interactive_data.get('type')
+
+                if interactive_type == 'button_reply':
+                    button_id = interactive_data.get('button_reply', {}).get('id')
+                    button_title = interactive_data.get('button_reply', {}).get('title')
+                    logging.info(f"Webhook: Interactive Type: button_reply, Sender: {sender}, Button ID: {button_id}, Title: {button_title}")
+                    body_for_fallback = f"[User clicked button: {button_title} ({button_id})]"
+                    clicked_button_id = button_id # Store the ID for potential logic in step 5
+                    # TODO: In Step 5, map button_id to a new message_name and call send_custom_interactive_message
+                elif interactive_type == 'list_reply':
+                    list_item_id = interactive_data.get('list_reply', {}).get('id')
+                    list_item_title = interactive_data.get('list_reply', {}).get('title')
+                    logging.info(f"Webhook: Interactive Type: list_reply, Sender: {sender}, Item ID: {list_item_id}, Title: {list_item_title}")
+                    body_for_fallback = f"[User selected list item: {list_item_title} ({list_item_id})]"
+                    clicked_list_item_id = list_item_id
+                else:
+                    logging.warning(f"Webhook: Received unknown interactive type: {interactive_type} from {sender}. Full data: {interactive_data}")
+                    body_for_fallback = "[User sent an unknown interactive element]"
+
+                user_id_for_history = ''.join(c for c in sender if c.isalnum())
+                history = load_history(user_id_for_history)
+
+                if body_for_fallback:
+                    history.append(HumanMessage(content=body_for_fallback))
+
+                current_language = 'ar' # Default
+                button_or_list_title_for_lang_detect = ""
+                if interactive_type == 'button_reply':
+                    button_or_list_title_for_lang_detect = message.get('interactive', {}).get('button_reply', {}).get('title', '')
+                elif interactive_type == 'list_reply':
+                    button_or_list_title_for_lang_detect = message.get('interactive', {}).get('list_reply', {}).get('title', '')
+
+                current_language = detect_language_from_text(button_or_list_title_for_lang_detect)
+                logging.info(f"Webhook: Detected language for interactive reply from {sender} as '{current_language}' based on title '{button_or_list_title_for_lang_detect}'.")
+
+                next_message_name = None
+                ai_action_for_history = None
+
+                if clicked_button_id:
+                    if clicked_button_id == "button_id1": # "أملك شقة وحاب أشغلها"
+                        next_message_name = "owner_options"
+                    elif clicked_button_id == "button_id2": # "أبي أستأجر شقة"
+                        next_message_name = "tenant_options"
+                    elif clicked_button_id == "button_id3": # "أبي أتواصل مع خدمة العملاء"
+                        text_to_send = "سيتم التواصل معك قريبا بخصوص استفسارك." if current_language == 'ar' else "Our team will contact you shortly regarding your inquiry."
+                        send_whatsapp_message(sender, text_to_send)
+                        ai_action_for_history = text_to_send
+                        users_in_interactive_flow.discard(sender)
+                    elif clicked_button_id == "button_id4": # "نعم مؤثثة"
+                        next_message_name = "furnished_apartment"
+                    elif clicked_button_id == "button_id5": # "لا غير مؤثثة"
+                        next_message_name = "unfurnished_apartment"
+                    elif clicked_button_id in ["button_id7", "button_id8"]: # URL buttons
+                        logging.info(f"Webhook: User {sender} clicked URL button {clicked_button_id}. No response message needed.")
+                        ai_action_for_history = f"[User clicked URL button {clicked_button_id}]" # No actual AI message sent
+                        users_in_interactive_flow.discard(sender)
+
+                elif clicked_list_item_id:
+                    if clicked_list_item_id.startswith("row_id"):
+                        city_selected = message.get('interactive', {}).get('list_reply', {}).get('title', 'the selected city')
+                        text_to_send = f"شكرا لاختيارك {city_selected}. سيقوم فريقنا بالتواصل معك قريبا." if current_language == 'ar' else f"Thanks for selecting {city_selected}. Our team will contact you shortly."
+                        send_whatsapp_message(sender, text_to_send)
+                        ai_action_for_history = text_to_send
+                        users_in_interactive_flow.discard(sender)
+
+                if next_message_name:
+                    success = send_custom_interactive_message(sender, next_message_name, current_language)
+                    if success:
+                        logging.info(f"Webhook: Successfully sent interactive message '{next_message_name}' to {sender} in {current_language}.")
+                        ai_action_for_history = f"[Sent {next_message_name} in {current_language}]"
+                        # users_in_interactive_flow remains active if they are sent another interactive message
+                    else:
+                        logging.error(f"Webhook: Failed to send interactive message '{next_message_name}' to {sender} in {current_language}.")
+                        ai_action_for_history = f"[Failed to send {next_message_name} in {current_language}]"
+                        # Consider removing from flow or sending fallback text? For now, just log.
+
+                if ai_action_for_history:
+                    history.append(AIMessage(content=ai_action_for_history))
+
+                if len(history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
+                    history = history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
+                save_history(user_id_for_history, history)
+                continue # End processing for this interactive message here
+
             if not (sender and body_for_fallback):
+                logging.warning(f"Webhook: Message from {sender} of type {msg_type} resulted in no body_for_fallback. Skipping.")
+                continue
+
+            # Processing for text messages (and other types that fall through)
+            # Ensure body_for_fallback is a string before calling .lower() or .strip()
+            if not isinstance(body_for_fallback, str):
+                logging.warning(f"Webhook: body_for_fallback is not a string for sender {sender} (type: {msg_type}). Skipping text processing for this message. Value: {body_for_fallback}")
                 continue
 
             normalized_body = body_for_fallback.lower().strip()
-            logging.info(f"Webhook: Processing message from sender: {sender}, body: '{normalized_body}'")
-            # Removed global declarations from here
+            logging.info(f"Webhook: Processing message from sender: {sender}, normalized_body: '{normalized_body}' (type: {msg_type})")
 
+
+            # --- Administrative Commands (Processed first) ---
             if normalized_body == "stop all":
                 is_globally_paused = True
-                # active_conversations_during_global_pause is intentionally NOT cleared
                 send_whatsapp_message(sender, "Bot is now globally paused. Individually started conversations will continue.")
                 continue
             if normalized_body == "start all":
@@ -497,17 +629,61 @@ def webhook():
                     logging.info(f"COMMAND 'start {target_user_input}': AFTER: paused_conversations: {paused_conversations}, active_conversations_during_global_pause: {active_conversations_during_global_pause}")
                 continue
 
+            # --- Pause/Resume Checks (After admin commands) ---
             logging.info(f"Webhook: PRE-SKIP CHECK for sender: {sender}")
             logging.info(f"Webhook: PRE-SKIP CHECK: is_globally_paused: {is_globally_paused}")
             logging.info(f"Webhook: PRE-SKIP CHECK: paused_conversations: {repr(paused_conversations)}")
             logging.info(f"Webhook: PRE-SKIP CHECK: active_conversations_during_global_pause: {repr(active_conversations_during_global_pause)}")
-            # Check if conversation is individually paused
+
             if sender in paused_conversations:
+                logging.info(f"Webhook: Conversation with {sender} is individually paused. Skipping.")
+                continue
+            if is_globally_paused and sender not in active_conversations_during_global_pause:
+                logging.info(f"Webhook: System is globally paused and {sender} is not in active_conversations_during_global_pause. Skipping.")
                 continue
 
-            # Check if globally paused AND this sender is not specifically allowed
-            if is_globally_paused and sender not in active_conversations_during_global_pause:
-                continue
+            # --- Greeting Detection and Initial Interactive Message (for text messages only) ---
+            if msg_type == 'text':
+                detected_language = None
+                # Check English greetings
+                if normalized_body in english_greetings:
+                    detected_language = 'en'
+                # Check Arabic greetings if not already detected as English
+                elif normalized_body in arabic_greetings:
+                    detected_language = 'ar'
+
+                if detected_language:
+                    logging.info(f"Webhook: Detected greeting '{normalized_body}' from {sender} in {detected_language}.")
+                    # Send initial interactive message
+                    success = send_custom_interactive_message(sender, "initial_greeting", detected_language)
+                    if success:
+                        users_in_interactive_flow.add(sender)
+                        logging.info(f"Webhook: Successfully sent initial_greeting to {sender} in {detected_language}. User added to interactive flow.")
+                        ai_action_content = "[Sent initial_greeting_message]"
+                    else:
+                        logging.error(f"Webhook: Failed to send initial_greeting to {sender} in {detected_language}. Sending text fallback.")
+                        fallback_text = "عذراً، حدث خطأ ما. الرجاء المحاولة مرة أخرى لاحقاً." if detected_language == 'ar' else "Sorry, something went wrong. Please try again later."
+                        send_whatsapp_message(sender, fallback_text)
+                        ai_action_content = f"[Failed to send initial_greeting, sent text fallback: {fallback_text}]"
+                        users_in_interactive_flow.discard(sender) # Remove from flow as interactive part failed
+
+                    # Save history for greeting attempt (success or failure)
+                    user_id_for_history = ''.join(c for c in sender if c.isalnum())
+                    history = load_history(user_id_for_history)
+                    history.append(HumanMessage(content=body_for_fallback)) # User's greeting
+                    history.append(AIMessage(content=ai_action_content)) # AI's action
+                    if len(history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
+                        history = history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
+                    save_history(user_id_for_history, history)
+
+                    # If initial greeting was sent (even if fallback text was the actual message due to failure),
+                    # we 'continue' to prevent LLM processing for this turn.
+                    # The user's next message will either be an interactive reply or new text.
+                    continue # Skip LLM call for this turn
+
+            # --- LLM Processing (if not handled by greeting or other flows) ---
+            if msg_type == 'text' and sender in users_in_interactive_flow:
+                logging.info(f"Webhook: User {sender} is in interactive flow but sent a text message. Processing with LLM.")
 
             user_id = ''.join(c for c in sender if c.isalnum())
             history = load_history(user_id)

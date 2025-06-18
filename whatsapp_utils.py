@@ -7,6 +7,8 @@ import requests
 import tempfile
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 
+from interactive_messages import initial_greeting_message, owner_options_message, furnished_apartment_message, unfurnished_apartment_message, tenant_options_message
+
 # Load environment variables for Whapi.Cloud
 WHAPI_API_URL = os.getenv('API_URL')
 WHAPI_TOKEN = os.getenv('API_TOKEN')
@@ -251,4 +253,70 @@ def send_interactive_list_message(to, message_data):
         return True
     else:
         logging.error(f"Failed to send interactive list message to {to}. Response: {response}")
+        return False
+
+
+def translate_payload(payload, language):
+    """
+    Recursively translates a message payload dictionary to the specified language.
+    It looks for dictionaries with 'ar' and 'en' keys and replaces them with
+    the value corresponding to the given language.
+    """
+    if isinstance(payload, dict):
+        if 'ar' in payload and 'en' in payload and len(payload) == 2:
+            return payload.get(language, payload.get('en')) # Default to English if lang not found
+
+        new_dict = {}
+        for key, value in payload.items():
+            new_dict[key] = translate_payload(value, language)
+        return new_dict
+    elif isinstance(payload, list):
+        return [translate_payload(item, language) for item in payload]
+    else:
+        return payload
+
+message_templates = {
+    "initial_greeting": initial_greeting_message,
+    "owner_options": owner_options_message,
+    "furnished_apartment": furnished_apartment_message,
+    "unfurnished_apartment": unfurnished_apartment_message,
+    "tenant_options": tenant_options_message,
+}
+
+def send_custom_interactive_message(to: str, message_name: str, language: str):
+    """
+    Sends a custom interactive message (button or list) using a predefined template.
+    The message is translated to the specified language before sending.
+    """
+    if not WHAPI_API_URL or not WHAPI_TOKEN:
+        logging.error("WHAPI API_URL or API_TOKEN not configured. Cannot send message.")
+        return False
+
+    template = message_templates.get(message_name)
+    if not template:
+        logging.error(f"Unknown message template name: {message_name}")
+        return False
+
+    # Deep copy the template to avoid modifying the original
+    message_payload = json.loads(json.dumps(template))
+
+    # Translate the payload
+    translated_payload = translate_payload(message_payload, language)
+
+    # Add the 'to' field
+    translated_payload['to'] = to
+
+    # The 'type' and 'view_once' are already part of the template
+
+    endpoint = 'messages/interactive'
+    logging.info(f"Attempting to send custom interactive message '{message_name}' to {to} in '{language}'.")
+    logging.debug(f"Translated payload for '{message_name}': {json.dumps(translated_payload, indent=2, ensure_ascii=False)}")
+
+    response = send_whapi_request(endpoint, translated_payload, method='POST')
+
+    if response and response.get('sent'):
+        logging.info(f"Successfully sent custom interactive message '{message_name}' to {to}.")
+        return True
+    else:
+        logging.error(f"Failed to send custom interactive message '{message_name}' to {to}. Response: {response}")
         return False
