@@ -35,6 +35,16 @@ def get_sheet_data():
             return pd.DataFrame()
 
         sheet_name = os.getenv('PROPERTY_SHEET_NAME', 'Properties') # Default sheet name
+    # Check if the fetched sheet_name looks like a URL, which is incorrect.
+        if sheet_name and "docs.google.com/spreadsheets/d/" in sheet_name:
+            # Use the same default as in os.getenv for consistency
+            default_sheet_name_for_fallback = 'Properties'
+            logging.warning(
+                f"PROPERTY_SHEET_NAME environment variable ('{sheet_name}') appears to be a URL. "
+                f"This is incorrect. Falling back to default sheet name '{default_sheet_name_for_fallback}'. "
+                "Please ensure PROPERTY_SHEET_NAME is set to the actual tab name of the sheet."
+            )
+            sheet_name = default_sheet_name_for_fallback
 
         creds_json_str = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
         if not creds_json_str:
