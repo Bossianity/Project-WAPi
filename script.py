@@ -90,6 +90,7 @@ paused_conversations = set()
 active_conversations_during_global_pause = set()
 
 # --- Interactive Flow State & Greeting Keywords ---
+# Verified imports and component variable names on 2023-12-16
 users_in_interactive_flow = set() # Temporary state for users in the new interactive flow
 
 arabic_greetings = [
