@@ -57,6 +57,7 @@ from whatsapp_utils import (
     # send_custom_interactive_message # This will no longer be used for the main flow by this script
 )
 
+STALE_MESSAGE_THRESHOLD_SECONDS = 90
 
 # ─── Load Environment and Configuration ──────────────────────────────────────
 load_dotenv()
@@ -549,6 +550,27 @@ def webhook():
             return jsonify(status='success_no_messages'), 200
 
         for message in incoming_messages:
+            # Stale message check
+            message_timestamp = message.get('t')
+            if message_timestamp:
+                try:
+                    message_timestamp_dt_utc = datetime.utcfromtimestamp(int(message_timestamp))
+                    current_time_utc = datetime.utcnow()
+                    time_difference_seconds = (current_time_utc - message_timestamp_dt_utc).total_seconds()
+
+                    if time_difference_seconds > STALE_MESSAGE_THRESHOLD_SECONDS:
+                        sender_for_log = message.get('from', 'unknown_sender')
+                        logging.warning(
+                            f"Stale message from {sender_for_log} received at {message_timestamp_dt_utc} "
+                            f"(timestamp: {message_timestamp}, {time_difference_seconds:.2f}s ago) - discarding."
+                        )
+                        continue  # Skip to the next message
+                except ValueError:
+                    logging.warning(f"Could not parse timestamp {message_timestamp} for stale message check. Proceeding with message.")
+                except Exception as e:
+                    logging.error(f"Error during stale message check for timestamp {message_timestamp}: {e}. Proceeding with message.")
+
+
             if message.get('from_me'):
                 continue
 

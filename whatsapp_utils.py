@@ -171,8 +171,6 @@ def send_interactive_button_message(to, message_data, api_url, api_token):
     response = send_whapi_request(api_url, api_token, endpoint, payload)
     logging.info(json.dumps(payload, indent=2)) # This logging is fine
 
-    response = send_whapi_request(api_url, api_token, endpoint, payload)
-
     if response and response.get('sent'):
         logging.info(f"Successfully sent interactive button message to {to}.")
         return True
@@ -181,7 +179,7 @@ def send_interactive_button_message(to, message_data, api_url, api_token):
         return False
 
 
-def send_interactive_list_message(to, message_data):
+def send_interactive_list_message(to, message_data, api_url, api_token):
     """
     Sends an interactive list message using the Whapi.Cloud API,
     matching the specified payload structure.
@@ -259,7 +257,7 @@ def send_interactive_list_message(to, message_data):
     logging.info(f"Attempting to send interactive list message to {to}. Final payload (before sending):")
     logging.info(json.dumps(payload, indent=2))
 
-    response = send_whapi_request(endpoint, payload)
+    response = send_whapi_request(api_url, api_token, endpoint, payload)
 
     if response and response.get('sent'):
         logging.info(f"Successfully sent interactive list message to {to}.")
