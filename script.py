@@ -1146,15 +1146,15 @@ def handle_new_messages():
                 body_for_fallback = selected_title # Use button/list title for fallback if not handled by new flow
 
                 if current_step == 'awaiting_initial_choice' and button_id:
-                    if button_id == 'button_id1': # Owns apartment
+                    if button_id == 'button_id1' or button_id.endswith(':button_id1'): # Owns apartment
                         send_furnished_query_message(sender, language=current_language)
                         interactive_flow_states[sender]['step'] = 'awaiting_furnished_choice'
                         return jsonify(status='success_interactive_handled'), 200
-                    elif button_id == 'button_id2': # Wants to rent
+                    elif button_id == 'button_id2' or button_id.endswith(':button_id2'): # Wants to rent
                         send_city_selection_message(sender, language=current_language)
                         interactive_flow_states[sender]['step'] = 'awaiting_city_choice'
                         return jsonify(status='success_interactive_handled'), 200
-                    elif button_id == 'button_id3': # Other inquiries
+                    elif button_id == 'button_id3' or button_id.endswith(':button_id3'): # Other inquiries
                         # Using current_language for the generic message
                         response_text = "Please type your question, and I'll do my best to help."
                         if current_language == 'ar':
@@ -1184,13 +1184,13 @@ def handle_new_messages():
                         button_title = message['reply']['buttons_reply'].get('title') # For logging or fallback
                         logging.info(f"Interactive flow: User {sender} at step {current_step} pressed button {button_id} ('{button_title}')")
 
-                        if button_id == 'button_id4': # "Yes, furnished"
+                        if button_id == 'button_id4' or button_id.endswith(':button_id4'): # "Yes, furnished"
                             send_furnished_apartment_survey_message(sender, language=current_language)
                             if sender in interactive_flow_states: # Check before deleting
                                 del interactive_flow_states[sender]
                             logging.info(f"Interactive flow for {sender} (furnished branch) concluded by sending survey link.")
                             return jsonify(status='success_interactive_handled_survey_sent'), 200
-                        elif button_id == 'button_id5': # "No, unfurnished"
+                        elif button_id == 'button_id5' or button_id.endswith(':button_id5'): # "No, unfurnished"
                             send_unfurnished_apartment_survey_message(sender, language=current_language)
                             if sender in interactive_flow_states: # Check before deleting
                                 del interactive_flow_states[sender]
