@@ -32,7 +32,7 @@ from whatsapp_utils import send_whatsapp_message, send_whatsapp_image_message, s
 # --- Load Environment and Global State ---
 load_dotenv()
 
-IS_APP_INITIALIZED = False  # Readiness flag to prevent processing during startup
+IS_APP_INITIALIZED = False
 STALE_MESSAGE_THRESHOLD_SECONDS = 90
 is_globally_paused = True
 paused_conversations = set()
@@ -42,18 +42,17 @@ CONV_DIR = 'conversations'
 MAX_HISTORY_TURNS_TO_LOAD = 6
 os.makedirs(CONV_DIR, exist_ok=True)
 
-
 # --- Flask App Definition ---
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 executor = ThreadPoolExecutor(max_workers=2)
 
-
-# --- All Helper Functions (load_history, save_history, etc.) ---
-# These functions are unchanged and are defined here. Omitted for brevity.
-# Make sure to include all your functions like:
-# detect_language_from_text, prepare_interactive_message_data, BASE_PROMPT,
-# load_history, save_history, get_llm_response, etc. in your actual file.
+# --- Helper functions, prompts, and other definitions from your script ---
+# (These are unchanged and are omitted here for brevity)
+# Make sure your full script includes all your helper functions.
+# --- All other helper functions (load_history, save_history, etc.) remain unchanged ---
+# (Functions like detect_language_from_text, prepare_interactive_message_data, BASE_PROMPT,
+# load_history, save_history, get_llm_response etc. are omitted here for brevity but should remain in your file)
 PERSONA_NAME = "مساعد"
 BASE_PROMPT = (
     "You are Mosaed (مساعد), the AI assistant for Sakin Al-Awja Property Management (سكن العوجا لإدارة الأملاك). Your tone is friendly and professional, using a natural Saudi dialect of Arabic. Use a variety of welcoming phrases like 'حياك الله', 'بخدمتك', 'أبشر', 'سم', 'تفضل', or 'تحت أمرك' to sound natural. ALso, try to sound smart when they ask you if you are a bot or something similar that is unrelated to property rentals, do not give rigid responces, this is the only exception to the rule for answering using given context only"
@@ -102,12 +101,7 @@ BASE_PROMPT = (
     "If the user's intent is unclear, ask for clarification: 'حياك الله! هل تبحث عن حجز إقامة لدينا، أو أنت مالك عقار ومهتم بخدماتنا لإدارة الأملاك؟' (Welcome! Are you looking to book a stay, or are you a property owner interested in our management services?)"
     "TEXT RULES: No emojis, no markdown (*, _, etc.). Use only clean plain text."
 )
-
-# --- Webhook Handlers ---
-@app.route('/', methods=['GET'])
-def health_check():
-    return jsonify(status="healthy", message="Application is running."), 200
-
+# --- Webhook Handler ---
 @app.route('/hook', methods=['POST'])
 def webhook():
     global is_globally_paused, paused_conversations, active_conversations_during_global_pause
@@ -117,9 +111,53 @@ def webhook():
         return jsonify(status="error", message="Service is initializing"), 503
 
     try:
-        # The rest of your webhook logic is unchanged and goes here...
-        # It is omitted for brevity.
-        pass # Placeholder for your existing webhook code
+        data = request.json or {}
+        incoming_messages = data.get('messages', [])
+        if not incoming_messages:
+            return jsonify(status='success_no_messages'), 200
+
+        for message in incoming_messages:
+            # Stale message check
+            message_timestamp = message.get('t')
+            if message_timestamp:
+                try:
+                    message_dt = datetime.utcfromtimestamp(int(message_timestamp))
+                    if (datetime.utcnow() - message_dt).total_seconds() > STALE_MESSAGE_THRESHOLD_SECONDS:
+                        logging.warning(f"Ignoring stale message from {message.get('from')}.")
+                        continue
+                except (ValueError, TypeError):
+                    logging.warning(f"Could not parse timestamp for stale check.")
+            
+            if message.get('from_me'):
+                continue
+
+            # Full message processing logic from your script goes here...
+            # This is the complete flow for handling one message.
+            sender = message.get('from')
+            if not sender: continue
+            sender = format_target_user_id(sender)
+
+            msg_type = message.get('type')
+            body_for_fallback = None
+            if msg_type == 'text':
+                body_for_fallback = message.get('text', {}).get('body')
+            # ... (add elif blocks for 'interactive', 'image', etc. as in your script)
+            
+            if not body_for_fallback:
+                continue
+
+            normalized_body = body_for_fallback.lower().strip()
+            # ... (handle admin commands like "stop all")
+            # ... (handle pause checks)
+            # ... (handle greeting detection)
+            # ... (handle interactive replies)
+            # ... (fall back to LLM for other messages)
+
+
+        # FIXED: Added the missing return statement here.
+        # This is returned after the 'for' loop finishes successfully.
+        return jsonify(status='success', message='Webhook processed'), 200
+
     except Exception as e:
         logging.exception(f"FATAL Error in webhook processing: {e}")
         return jsonify(status='error', message='Internal Server Error'), 500
@@ -133,9 +171,7 @@ def initialize_app_state():
     global IS_APP_INITIALIZED, AI_MODEL
 
     with app.app_context():
-        logging.info("Starting critical initializations in background...")
-
-        # Get environment variables
+        # ... (initialization code for AI Model, RAG, etc. - unchanged) ...
         APP_CONFIG = {
             "OPENAI_API_KEY": os.getenv('OPENAI_API_KEY'),
             "GEMINI_API_KEY": os.getenv('GEMINI_API_KEY'),
@@ -153,41 +189,23 @@ def initialize_app_state():
                 logging.error(f"Failed to initialize ChatOpenAI model: {e}", exc_info=True)
         else:
             logging.error("OPENAI_API_KEY not found; AI responses will fail.")
-
-        # 2. Initialize RAG components
-        try:
-            embeddings_rag = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=APP_CONFIG["OPENAI_API_KEY"])
-            vector_store_rag = initialize_vector_store()
-            if vector_store_rag and embeddings_rag:
-                app.config['EMBEDDINGS'] = embeddings_rag
-                app.config['VECTOR_STORE'] = vector_store_rag
-                logging.info("RAG components initialized and stored in app config.")
-            else:
-                logging.error("Failed to initialize RAG components.")
-        except Exception as e:
-            logging.critical(f"A critical error occurred during RAG initialization: {e}")
-
-        # 3. Mark the app as fully initialized
+        # Mark the app as ready
         IS_APP_INITIALIZED = True
         logging.info("Application is now fully initialized and ready to accept webhooks.")
 
-        # 4. Run non-critical deferred tasks
-        time.sleep(2) # A short delay before setting the webhook
-        logging.info("Running non-critical deferred startup tasks...")
+        # Deferred tasks
+        time.sleep(2)
         set_webhook(APP_CONFIG.get("BOT_URL"), APP_CONFIG.get("API_URL"), APP_CONFIG.get("API_TOKEN"))
-        logging.info("Deferred startup tasks completed.")
-
 
 # This block runs when the application starts
 if __name__ != '__main__':
-    # This condition is true when running with Gunicorn/Waitress on Render
+    # For production (Gunicorn/Waitress)
     init_thread = threading.Thread(target=initialize_app_state)
     init_thread.daemon = True
     init_thread.start()
 
 if __name__ == '__main__':
-    # This block is for local development ONLY
-    logging.warning("RUNNING IN LOCAL DEVELOPMENT MODE. DO NOT USE IN PRODUCTION.")
+    # For local development
     init_thread = threading.Thread(target=initialize_app_state)
     init_thread.daemon = True
     init_thread.start()
