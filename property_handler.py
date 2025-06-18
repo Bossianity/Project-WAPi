@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import gspread
 import pandas as pd
@@ -22,6 +23,13 @@ def get_sheet_data():
     """
     try:
         sheet_id = os.getenv('PROPERTY_SHEET_ID')
+        if sheet_id and "docs.google.com/spreadsheets/d/" in sheet_id:
+            match = re.search(r"/spreadsheets/d/([^/]+)", sheet_id)
+            if match:
+                sheet_id = match.group(1)
+                logging.info(f"Extracted Google Sheet ID: {sheet_id} from URL.")
+            else:
+                logging.warning(f"PROPERTY_SHEET_ID looks like a URL but could not extract ID: {sheet_id}")
         if not sheet_id:
             logging.error("PROPERTY_SHEET_ID environment variable not set.")
             return pd.DataFrame()
