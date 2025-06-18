@@ -69,6 +69,7 @@ PROPERTY_SHEET_NAME = os.getenv('PROPERTY_SHEET_NAME', 'Properties')
 # --- Global Pause Feature ---
 is_globally_paused = False
 paused_conversations = set()
+active_conversations_during_global_pause = set()
 
 # ─── Persona and AI Prompt Configuration ──────────────────────────────────
 PERSONA_NAME = "مساعد"
@@ -449,32 +450,48 @@ def webhook():
 
             normalized_body = body_for_fallback.lower().strip()
             global is_globally_paused
+            global paused_conversations
+            global active_conversations_during_global_pause
 
-            if normalized_body == "bot pause all":
+            if normalized_body == "stop all":
                 is_globally_paused = True
-                send_whatsapp_message(sender, "Bot is now globally paused.")
+                # active_conversations_during_global_pause is intentionally NOT cleared
+                send_whatsapp_message(sender, "Bot is now globally paused. Individually started conversations will continue.")
                 continue
-            if normalized_body == "bot resume all":
+            if normalized_body == "start all":
                 is_globally_paused = False
                 paused_conversations.clear()
-                send_whatsapp_message(sender, "Bot is now globally resumed.")
+                active_conversations_during_global_pause.clear()
+                send_whatsapp_message(sender, "Bot is now globally resumed for all conversations.")
                 continue
-            if normalized_body.startswith("bot pause "):
-                target_user_input = normalized_body.split("bot pause ", 1)[1].strip()
+            if normalized_body.startswith("stop "):
+                target_user_input = normalized_body.split("stop ", 1)[1].strip()
                 if target_user_input:
                     target_user_id = format_target_user_id(target_user_input)
                     paused_conversations.add(target_user_id)
+                    active_conversations_during_global_pause.discard(target_user_id) # Remove if present
                     send_whatsapp_message(sender, f"Bot interactions will be paused for: {target_user_id}")
                 continue
-            if normalized_body.startswith("bot resume "):
-                target_user_input = normalized_body.split("bot resume ", 1)[1].strip()
+            if normalized_body.startswith("start "):
+                target_user_input = normalized_body.split("start ", 1)[1].strip()
                 if target_user_input:
                     target_user_id = format_target_user_id(target_user_input)
-                    paused_conversations.discard(target_user_id)
-                    send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}")
+                    if is_globally_paused:
+                        active_conversations_during_global_pause.add(target_user_id)
+                        paused_conversations.discard(target_user_id) # Ensure it's not in both
+                        send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}. Other conversations remain paused.")
+                    else:
+                        paused_conversations.discard(target_user_id)
+                        # active_conversations_during_global_pause.discard(target_user_id) # Not strictly necessary here but good for consistency
+                        send_whatsapp_message(sender, f"Bot interactions will be resumed for: {target_user_id}")
                 continue
 
-            if is_globally_paused or sender in paused_conversations:
+            # Check if conversation is individually paused
+            if sender in paused_conversations:
+                continue
+
+            # Check if globally paused AND this sender is not specifically allowed
+            if is_globally_paused and sender not in active_conversations_during_global_pause:
                 continue
 
             user_id = ''.join(c for c in sender if c.isalnum())
