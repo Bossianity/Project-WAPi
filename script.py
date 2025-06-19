@@ -87,11 +87,7 @@ BASE_PROMPT = (
 
     "GENERAL CONTEXT ADHERENCE: You MUST strictly follow any contextual information provided (e.g., 'Relevant Information Found: ...'). This is especially true for property listings. See specific rules in SCENARIO 2."
 
-    "COMMAND INTERPRETATION FROM CONTEXT: The 'Relevant Information Found' section (the context retrieved from documents) may contain explicit commands for you. These commands will tell you exactly what to say or what to ask. For example:"
-    "'COMMAND: Tell the user: We have a special offer this week.'"
-    "'COMMAND: Ask the user: What is your preferred viewing time?'"
-    "'ACTION: Guide the user to the promotions page.'"
-    "If you see such a command, you MUST prioritize it and follow the instruction precisely. This overrides general conversation flow if a specific command is given in the context."
+    "COMMAND INTERPRETATION FROM CONTEXT: The 'Relevant Information Found' section (the context retrieved from documents) may contain directives for you. You should naturally understand and execute tasks, answer questions, or follow instructions found within this section. For example, if the context indicates 'The user should be directed to example.com/booking', you should guide the user to that URL. If it says 'Ask the user about their budget', you should ask the user about their budget. These directives from the context MUST be prioritized and followed precisely, overriding general conversation flow if specific instructions are given in the context."
 
     "Your primary goal is to determine the user's intent: are they a **Property Owner** wanting management/furnishing services, or a **Guest** looking to book a daily rental?"
 
@@ -119,40 +115,32 @@ BASE_PROMPT = (
         "   -   About expected profit: 'يعتمد الدخل على مساحة الوحدة، موقعها وتجهيزاتها. لو حاب تفاصيل أكثر، ممكن نحجز لك مكالمة نناقش فيها كل التفاصيل.'"
 
     "**SCENARIO 2: The user is a Guest looking to book.**"
-    "If the user asks about booking, availability, prices for a stay, or property details (e.g., 'I want an apartment', 'Do you have villas?', 'How much is a stay?'), follow this workflow:"
+    "If the user asks about booking, availability, prices for a stay, or property details (e.g., 'I want an apartment', 'Do you have villas?', 'How much is a stay?'), your primary source of information is the 'Relevant Information Found' section, which is derived from our Google Docs."
 
-    "   **CRITICAL PROPERTY LISTING RULE:** When property information is provided to you as context (e.g., 'Relevant Information Found: ...'), you MUST strictly adhere to the details in that context."
-    "    - ONLY list properties that are explicitly mentioned in the provided context."
-    "    - DO NOT invent, fabricate, or hallucinate any property names, details, or the number of properties available if they are not in the context."
-    "    - If the context says 'No properties found matching your criteria,' your response must reflect that, without suggesting any alternatives not present in the context."
+    "   **1. Prioritize Information from Google Doc Context:**"
+    "        *   Carefully examine the 'Relevant Information Found' for any direct booking links, websites, or specific instructions on how the user should proceed with a booking. If such information exists, you MUST present it to the user. For example, if the context says 'For bookings, please visit example.com/book', guide the user there."
+    "        *   If the context provides details about properties (names, descriptions, locations, prices), use this information to answer the user's questions. You should only refer to properties and details found in this context."
+    "        *   If the context indicates 'No properties found matching your criteria' or is empty, inform the user naturally. Do not invent property details."
 
-    "   a. **Identify the City:**"
-        "        *   Check if the user's query already specifies a city."
-        "        *   If no city is specified, your immediate next step is to ask the user for their desired city. For example: 'Certainly! To help you find the best options, in which city are you looking?' or 'حياك الله! في أي مدينة تبحث عن عقار؟'. Wait for their response. (Remember to follow the CRITICAL RULE FOR SEQUENTIAL INFORMATION GATHERING by asking only this one question and waiting for a reply)."
+    "   **2. Handling Queries if Context is Insufficient or General:**"
+    "        *   **If the Google Doc context provides a general booking process or contact information rather than specific property details or a direct booking link for a query:** Share that process or contact information. For example: 'You can see our available properties and book directly through our website at [website_link_from_context].'"
+    "        *   **Asking Clarifying Questions:** If the user's query is about booking but the 'Relevant Information Found' (from Google Docs) lacks specific details to directly answer or provide a booking link (e.g., the context is about general services, or the user's query is too vague like 'I want to book a place'):"
+    "            *   You can then ask clarifying questions to help narrow down their needs. This helps in either providing more relevant information from the existing context or preparing for a handoff if needed."
+    "            *   For example, ask ONCE for the desired city: 'حياك الله! في أي مدينة تبحث عن عقار؟' (Welcome! In which city are you looking for a property?). Wait for their response."
+    "            *   If city is known (either from them or context), and you still need more details to assist (e.g., context is very general), you might then ask about dates or number of guests, ONE AT A TIME. Example: 'To check availability, could you please tell me your desired check-in date?'"
+    "        *   **Price Queries:** If the user asks for a price and the Google Doc context contains pricing information (e.g., 'Villa Raha: 500 SAR/night on weekdays, 700 SAR/night on weekends'), provide it. If specific prices aren't in the context, you can state 'Prices are available on the booking page: [link_from_context]' or 'Please provide desired dates and city so I can check further based on our available information.'"
 
-    "   b. **Present Properties Immediately Once City is Known:**"
-        "        *   Once the city is known (either from their initial query or your question), your IMMEDIATE next action is to retrieve property listings for that city."
-        "        *   If the user's query *before* the city was established also clearly mentioned a specific property type (like 'villa' or 'apartment'), you should use this type as an additional filter along with the city."
-        "        *   **CRITICALLY IMPORTANT:** DO NOT ask for any *other* details like price range, number of guests, specific dates, or other amenities *before* showing this initial list of properties. Your primary goal after identifying the city is to present relevant properties without further delay."
-        "        *   Present the listings. Show property names and include brief details like neighborhood. Prices will be stated as 'available upon request' at this stage, as per the context you receive."
-        "        *   If many properties are found (e.g., the retrieved context lists more than 5 properties), inform the user. For example: 'I found several properties in [City]. Here are the first few to get you started: [List 3-5 properties].' If fewer properties (e.g., 1-5) are found, you can list all of them."
+    "   **3. Information Gathering and Handoff (If Necessary):**"
+    "        *   If, after consulting the Google Doc context and asking necessary clarifying questions, you have gathered details like property interest (if any specific one is mentioned in context), city, dates, and number of guests, and the context does not provide a direct booking link for this specific refined query, you can then hand off."
+    "        *   Respond with: 'Thank you. I have your details. For the next step, please visit our booking page at [general_booking_link_from_context] or our team will verify availability based on the information you provided and contact you shortly.'"
+    "        *   Only collect information if it's useful for either directing them to a link from the context or for a handoff. If the context clearly gives a link for all bookings, prioritize that."
 
-    "   c. **Handling Price Queries:**"
-        "        *   **If the user asks for the price of a specific property you listed (which initially shows 'Price available upon request'):**"
-        "            *   Your first response MUST be to ask whether they want the price for a 'weekday' or a 'weekend' stay. For example: 'Sure, I can get the price for [Property Name]. Are you interested in the weekday price or the weekend price?' or in Arabic: 'أبشر، ممكن أعطيك سعر [اسم العقار]. هل يهمك سعر وسط الأسبوع أو سعر نهاية الأسبوع؟' (Remember the CRITICAL RULE FOR SEQUENTIAL INFORMATION GATHERING)."
-        "            *   You MUST wait for the user to specify 'weekday' or 'weekend' (or similar terms like 'regular day', 'holiday', 'يوم عادي', 'ويكند')."
-        "            *   Once the user clarifies, your next response should provide the specific price (WeekdayPrice or WeekendPrice) for that property. The actual price will be available in the detailed context for that property that you will receive. For example: 'The weekday price for [Property Name] is [WeekdayPrice] SAR.' or 'سعر نهاية الأسبوع لـ [اسم العقار] هو [WeekendPrice] ريال.'"
-        "            *   If the user asks for a monthly price, and `MonthlyPrice` is available in the context you received for that property, provide it directly. For example: 'The monthly price for [Property Name] is [MonthlyPrice] SAR.'"
+    "   **4. Media from Context:**"
+    "        *   If the 'Relevant Information Found' (Google Doc context) contains `[ACTION_SEND_IMAGE_GALLERY]` and the user asks for photos of a specific property mentioned in the context, your entire response must be ONLY that block. If it has `[VIDEO_LINK]`, include it naturally in your text when describing the property from the context."
 
-    "   d. **Invite Further Interaction/Refinement (After Initial Listing or Price Query):**"
-        "        *   After presenting the properties (or answering a price query), invite the user to interact further. For example: 'Let me know if any of these catch your eye, or if you'd like to see more. You can also provide more details (like number of guests, budget, or specific dates) to refine the search!'"
-
-    "   e. **Collect Booking Details (If User Expresses Intent):**"
-        "        *   If the user expresses clear intent to book a specific property (or one of the options you presented), then proceed to collect further details like check-in/check-out dates, and number of guests. If these are not yet known, ask for them ONE BY ONE. (Remember to follow the CRITICAL RULE FOR SEQUENTIAL INFORMATION GATHERING)."
-
-    "   f. **Confirm and Handoff:** Once you have all necessary details (property, city, dates, guests), respond with: 'Thank you. I have your details for the booking. Our team will verify the availability and contact you shortly to confirm.'"
-
-    "   g. **Handle Media:** If the context (retrieved property information) has `[ACTION_SEND_IMAGE_GALLERY]` and the user asks for photos of a specific property, your entire response must be ONLY that block. If it has `[VIDEO_LINK]`, include it naturally in your text when describing the property."
+    "   **General Guidance for Guest Scenario:**"
+    "        *   Your main goal is to use the 'Relevant Information Found' (from Google Docs) to guide the user. If it has a clear path to booking (like a URL), provide that. "
+    "        *   Avoid inventing property details or processes not mentioned in the context. Stick to the information retrieved from our documents."
 
     "--- END OF SCENARIOS ---"
     
@@ -353,164 +341,61 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
 
     # Step 2: Logic Execution Based on Intent
     context_str = ""
-    # Flag to prevent RAG fallback if a definitive city-based property search was done.
-    city_property_search_handled = False
 
-    if intent == "property_search" and PROPERTY_SHEET_ID:
-        city_filter_value = None
-        if filters and "City" in filters and isinstance(filters["City"], dict) and "value" in filters["City"]:
-            city_filter_value = filters["City"]["value"]
+    # The primary way to get context is through RAG from vector store (Google Docs content)
+    # This happens regardless of initial intent, but after intent analysis for potential filters.
+    vector_store = current_app.config.get('VECTOR_STORE')
+    if vector_store:
+        # We pass the original 'text' for RAG query,
+        # potentially could use 'filters' in future to refine RAG query if needed
+        retrieved_docs = query_vector_store(text, vector_store, k=3)
+        if retrieved_docs:
+            context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
+            logging.info(f"RAG generated context: {context_str}")
+        else:
+            logging.info("RAG: No documents found from vector store.")
+    else:
+        logging.warning("RAG: Vector store not available.")
 
-        if city_filter_value: # If a city is specified, this is a definitive search
-            city_property_search_handled = True
+    # If intent analysis yielded specific structured data (like property name for price clarification),
+    # and you want to explicitly pass that to the LLM in a structured way, you could append it here.
+    # For now, the LLM will rely on the BASE_PROMPT and the context_str from RAG.
 
-        all_properties_df = property_handler.get_sheet_data()
-        if not all_properties_df.empty:
-            filtered_df = property_handler.filter_properties(all_properties_df, filters) if filters else all_properties_df
-
-            if not filtered_df.empty:
-                context_str = "Relevant Information Found:\n"
-                for _, prop in filtered_df.head(5).iterrows():
-                    # price_parts = []
-                    # if pd.notna(prop.get('WeekdayPrice')) and prop.get('WeekdayPrice') > 0: price_parts.append(f"Weekday: {prop.get('WeekdayPrice')} SAR/night")
-                    # if pd.notna(prop.get('WeekendPrice')) and prop.get('WeekendPrice') > 0: price_parts.append(f"Weekend: {prop.get('WeekendPrice')} SAR/night")
-                    # if pd.notna(prop.get('MonthlyPrice')) and prop.get('MonthlyPrice') > 0: price_parts.append(f"Monthly: {prop.get('MonthlyPrice')} SAR")
-                    price_str = "Price available upon request" # Directly set this line
-
-                    context_str += (
-                        f"PropertyName: {prop.get('PropertyName', 'N/A')}\n"
-                        f"Location: {prop.get('Neighborhood', 'N/A')}, {prop.get('City', 'N/A')}\n"
-                        f"Price: {price_str}\n"
-                        f"Max Guests: {prop.get('Guests', 'N/A')}\n"
-                        f"Description: {prop.get('Description', 'No description available.')}\n"
-                    )
-                    
-                    image_urls = [prop.get(f'ImageURL{i}') for i in range(1, 4) if pd.notna(prop.get(f'ImageURL{i}')) and str(prop.get(f'ImageURL{i}')).startswith('http')]
-                    if image_urls:
-                        context_str += "[ACTION_SEND_IMAGE_GALLERY]\n" + "\n".join(image_urls) + f"\nImages for {prop.get('PropertyName', 'the property')}\n"
-
-                    video_url = prop.get('VideoURL1')
-                    if pd.notna(video_url) and str(video_url).startswith('http'):
-                        context_str += f"[VIDEO_LINK]: {video_url}\n"
-                    context_str += "---\n"
-            else: # No properties found after filtering
-                if city_filter_value:
-                    context_str = f"Relevant Information Found:\nNo properties found matching your criteria in {city_filter_value}."
-                else:
-                    context_str = "Relevant Information Found:\nNo properties found matching your criteria."
-        else: # Unable to access property listings from the sheet
-             context_str = "Relevant Information Found:\nI was unable to access property listings at the moment."
-
-    elif intent == "price_clarification" and PROPERTY_SHEET_ID and filters:
-        prop_name_filter_val = None
-        price_type_filter_val = None
-
-        if isinstance(filters.get("PropertyName"), dict) and "value" in filters.get("PropertyName"):
-            prop_name_filter_val = filters.get("PropertyName")["value"]
-        elif isinstance(filters.get("PropertyName"), str): # Simpler case if LLM returns string directly
-             prop_name_filter_val = filters.get("PropertyName")
-
-
-        if isinstance(filters.get("price_type"), dict) and "value" in filters.get("price_type"):
-            price_type_filter_val = filters.get("price_type")["value"]
-        elif isinstance(filters.get("price_type"), str): # Simpler case
-            price_type_filter_val = filters.get("price_type")
-
+    if intent == "price_clarification" and filters:
+        # Example: If filters contain PropertyName and price_type,
+        # you might want to ensure this specific info is highlighted for the LLM.
+        # However, the main information source should still be context_str.
+        # This section can be refined based on how well the LLM handles these with RAG context alone.
+        prop_name_filter_val = filters.get("PropertyName", {}).get("value") or filters.get("PropertyName")
+        price_type_filter_val = filters.get("price_type", {}).get("value") or filters.get("price_type")
 
         if prop_name_filter_val and price_type_filter_val:
-            property_name_to_find = prop_name_filter_val
-            requested_price_type = price_type_filter_val.lower()
-
-            all_properties_df = property_handler.get_sheet_data()
-            if not all_properties_df.empty:
-                property_specific_filter_dict = {"PropertyName": {"operator": "=", "value": property_name_to_find}}
-                target_property_df = property_handler.filter_properties(all_properties_df, property_specific_filter_dict)
-
-                if not target_property_df.empty:
-                    prop_details = target_property_df.iloc[0]
-                    price_value = None
-                    price_column_name = ""
-                    price_type_display = requested_price_type
-
-                    if requested_price_type == "weekday":
-                        price_column_name = "WeekdayPrice"
-                    elif requested_price_type == "weekend":
-                        price_column_name = "WeekendPrice"
-                    elif requested_price_type == "monthly":
-                        price_column_name = "MonthlyPrice"
-                    else:
-                        context_str = f"Relevant Information Found:\nI'm sorry, I can only provide 'weekday', 'weekend', or 'monthly' prices. You asked for '{requested_price_type}' for {property_name_to_find}."
-
-                    if price_column_name: # If price_type was valid
-                        if pd.notna(prop_details.get(price_column_name)) and prop_details.get(price_column_name) > 0:
-                            price_value = prop_details.get(price_column_name)
-                            context_str = (
-                                f"Relevant Information Found:\n"
-                                f"PropertyName: {property_name_to_find}\n"
-                                f"RequestedPrice: {price_value} SAR for {price_type_display} stay."
-                            )
-                        else:
-                            context_str = (
-                                f"Relevant Information Found:\n"
-                                f"The {price_type_display} price for {property_name_to_find} is not currently available."
-                            )
-                else:
-                    context_str = (
-                        f"Relevant Information Found:\n"
-                        f"Sorry, I couldn't find the specific details for a property named '{property_name_to_find}'. "
-                        f"Please ensure the name is correct, or I can show you the list of properties again."
-                    )
-            else:
-                context_str = "Relevant Information Found:\nI was unable to access property listings at the moment to check the price."
-            city_property_search_handled = True # Critical: Mark as handled
+            # You could add a note to context_str or rely on LLM to pick it up from the user query + RAG context
+            logging.info(f"Price clarification intent for: {prop_name_filter_val}, type: {price_type_filter_val}. LLM will use RAG context.")
         else:
             logging.warning(f"Price clarification intent for '{text}' but filters were missing or malformed: {filters}")
-            context_str = "I seem to have missed which property or price type you're asking about. Could you please clarify?"
-            city_property_search_handled = True # Critical: Mark as handled
+            # context_str += "\nNote to AI: User is asking for a price clarification, but details are missing. Use available context."
 
-    # Fallback for general property-related queries if not handled by specific intent and not a city search
-    elif is_property_related_query(text) and not city_property_search_handled and PROPERTY_SHEET_ID:
-        all_properties_df = property_handler.get_sheet_data()
-        if not all_properties_df.empty:
-            # Generic queries might not have 'filters' from intent analysis, or they might be broad.
-            filtered_df = property_handler.filter_properties(all_properties_df, filters) if filters else all_properties_df
-            if not filtered_df.empty:
-                context_str = "Relevant Information Found:\n"
-                for _, prop in filtered_df.head(5).iterrows(): # Identical formatting as above
-                    # price_parts = []
-                    # if pd.notna(prop.get('WeekdayPrice')) and prop.get('WeekdayPrice') > 0: price_parts.append(f"Weekday: {prop.get('WeekdayPrice')} SAR/night")
-                    # if pd.notna(prop.get('WeekendPrice')) and prop.get('WeekendPrice') > 0: price_parts.append(f"Weekend: {prop.get('WeekendPrice')} SAR/night")
-                    # if pd.notna(prop.get('MonthlyPrice')) and prop.get('MonthlyPrice') > 0: price_parts.append(f"Monthly: {prop.get('MonthlyPrice')} SAR")
-                    price_str = "Price available upon request" # Directly set this line
-                    context_str += (
-                        f"PropertyName: {prop.get('PropertyName', 'N/A')}\n"
-                        f"Location: {prop.get('Neighborhood', 'N/A')}, {prop.get('City', 'N/A')}\n"
-                        f"Price: {price_str}\n"
-                        f"Max Guests: {prop.get('Guests', 'N/A')}\n"
-                        f"Description: {prop.get('Description', 'No description available.')}\n"
-                    )
-                    image_urls = [prop.get(f'ImageURL{i}') for i in range(1, 4) if pd.notna(prop.get(f'ImageURL{i}')) and str(prop.get(f'ImageURL{i}')).startswith('http')]
-                    if image_urls:
-                        context_str += "[ACTION_SEND_IMAGE_GALLERY]\n" + "\n".join(image_urls) + f"\nImages for {prop.get('PropertyName', 'the property')}\n"
-                    video_url = prop.get('VideoURL1')
-                    if pd.notna(video_url) and str(video_url).startswith('http'):
-                        context_str += f"[VIDEO_LINK]: {video_url}\n"
-                    context_str += "---\n"
-            else:
-                context_str = "Relevant Information Found:\nNo properties found matching your current query."
+    elif intent == "property_search" and filters:
+        city_filter_value = filters.get("City", {}).get("value")
+        if city_filter_value:
+            logging.info(f"Property search intent in city: {city_filter_value}. LLM will use RAG context.")
+            # context_str += f"\nNote to AI: User is searching for properties, possibly in {city_filter_value}. Prioritize information from the retrieved context."
         else:
-             context_str = "Relevant Information Found:\nI was unable to access property listings."
+            logging.info("Property search intent with no specific city. LLM will use RAG context.")
 
-    # RAG fallback: Only if context_str is still empty AND it wasn't a city-specific property search that should be exclusive.
-    if not context_str and not city_property_search_handled:
-        vector_store = current_app.config.get('VECTOR_STORE')
-        if vector_store:
-            retrieved_docs = query_vector_store(text, vector_store, k=3)
-            if retrieved_docs:
-                context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
+
+    # If after RAG, context_str is still empty, and it's a property related query,
+    # you might add a generic message. But the goal is to rely on RAG.
+    if not context_str and is_property_related_query(text):
+        context_str = "Relevant Information Found:\nI currently don't have specific details for this property query from my documents. Please ask more general questions or I can try to help with other information."
+        logging.info("No RAG context and it's a property query. Added generic message.")
+
 
     # Step 3: Generate Final Response
-    final_prompt_to_llm = context_str + f"\n\nUser Question: {text}" if context_str else text
+    # Ensure context_str is prepared before this line
+    final_prompt_to_llm = (context_str + f"\n\nUser Question: {text}" if context_str
+                           else text)
     messages = [SystemMessage(content=BASE_PROMPT)] + history_dicts + [HumanMessage(content=final_prompt_to_llm)]
 
     for attempt in range(retries):
