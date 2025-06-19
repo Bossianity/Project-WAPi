@@ -3,8 +3,7 @@ import logging
 import json
 import shutil
 import time
-import google.api_core.exceptions
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_openai import OpenAIEmbeddings # MODIFIED
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
@@ -13,7 +12,7 @@ from langchain_core.documents import Document
 
 # --- Global Constants ---
 VECTOR_STORE_PATH = "faiss_index"
-EMBEDDING_MODEL_NAME = "models/embedding-001" # Gemini embedding model
+# EMBEDDING_MODEL_NAME = "models/embedding-001" # REMOVED
 PROCESSED_FILES_LOG_PATH = os.path.join(VECTOR_STORE_PATH, "processed_files.log")
 
 
@@ -26,9 +25,9 @@ def initialize_vector_store():
     Initializes or loads a FAISS vector store with a retry mechanism
     to handle potential startup timeouts.
     """
-    gemini_api_key_local = os.getenv('GEMINI_API_KEY')
-    if not gemini_api_key_local:
-        logging.error("GEMINI_API_KEY environment variable not set. Cannot initialize vector store.")
+    openai_api_key_local = os.getenv('OPENAI_API_KEY') # MODIFIED
+    if not openai_api_key_local:
+        logging.error("OPENAI_API_KEY environment variable not set. Cannot initialize vector store.") # MODIFIED
         return None
 
     embeddings_object = None
@@ -37,21 +36,16 @@ def initialize_vector_store():
 
     for attempt in range(max_retries):
         try:
-            embeddings_object = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME, google_api_key=gemini_api_key_local)
-            logging.info("GoogleGenerativeAIEmbeddings initialized successfully.")
+            embeddings_object = OpenAIEmbeddings(model="text-embedding-3-large", openai_api_key=openai_api_key_local) # MODIFIED
+            logging.info("OpenAIEmbeddings initialized successfully.") # MODIFIED
             break  # Exit loop if successful
-        except google.api_core.exceptions.GoogleAPIError as e:
-            logging.warning(f"Attempt {attempt + 1}/{max_retries} failed to initialize GoogleGenerativeAIEmbeddings (API Error): {e}. Retrying in {retry_delay} seconds...")
-            time.sleep(retry_delay)
-            retry_delay *= 2  # Exponential backoff
-        except Exception as e:
-            # Catch any other unexpected errors during initialization
-            logging.error(f"Attempt {attempt + 1}/{max_retries} encountered an unexpected error during GoogleGenerativeAIEmbeddings initialization: {e}", exc_info=True)
+        except Exception as e: # MODIFIED (removed specific Google API error)
+            logging.error(f"Attempt {attempt + 1}/{max_retries} encountered an unexpected error during OpenAIEmbeddings initialization: {e}", exc_info=True) # MODIFIED
             time.sleep(retry_delay)
             retry_delay *= 2 # Exponential backoff
 
     if embeddings_object is None:
-        logging.critical("Failed to initialize GoogleGenerativeAIEmbeddings after %s retries. RAG functionality will be unavailable.", max_retries)
+        logging.critical("Failed to initialize OpenAIEmbeddings after %s retries. RAG functionality will be unavailable.", max_retries) # MODIFIED
         return None
 
     # Logic for forcing a re-index remains the same
@@ -75,7 +69,7 @@ def initialize_vector_store():
             return faiss_store
         except Exception as e:
             logging.error(f"Failed to load existing FAISS index: {e}. Will attempt to create a new one.", exc_info=True)
-    
+
     # --- NEW: Create a new index with a retry loop ---
     logging.info("No existing index found. Creating new FAISS index...")
     max_retries = 3
@@ -86,10 +80,7 @@ def initialize_vector_store():
             faiss_store.save_local(VECTOR_STORE_PATH)
             logging.info("New FAISS index created and saved successfully.")
             return faiss_store
-        except google.api_core.exceptions.DeadlineExceeded as e:
-            logging.warning(f"Attempt {attempt + 1}/{max_retries} failed with DeadlineExceeded: {e}. Retrying in {2 ** attempt} seconds...")
-            time.sleep(2 ** attempt) # Exponential backoff
-        except Exception as e:
+        except Exception as e: # MODIFIED (removed specific Google API error)
             # Catch other potential errors during creation
             logging.error(f"An unexpected error occurred on attempt {attempt + 1}/{max_retries} while creating index: {e}", exc_info=True)
             time.sleep(2 ** attempt)
@@ -127,7 +118,7 @@ def update_processed_files_log(processed_files: dict):
         logging.error(f"Error writing processed files log to {PROCESSED_FILES_LOG_PATH}: {e}", exc_info=True)
 
 # --- Document Processing ---
-def process_document(file_path: str, vector_store: FAISS, embeddings: GoogleGenerativeAIEmbeddings):
+def process_document(file_path: str, vector_store: FAISS, embeddings: OpenAIEmbeddings): # MODIFIED
     """
     Processes a single document (PDF or TXT), splits it into chunks,
     and adds the chunks to the vector store.
@@ -231,7 +222,7 @@ def delete_document_from_vector_store(document_id: str, vector_store: FAISS) -> 
         logging.error(f"Error during deletion of document ID '{document_id}': {e}", exc_info=True)
         return False
 
-def process_google_document_text(document_id: str, text_content: str, vector_store: FAISS, embeddings: GoogleGenerativeAIEmbeddings) -> bool:
+def process_google_document_text(document_id: str, text_content: str, vector_store: FAISS, embeddings: OpenAIEmbeddings) -> bool: # MODIFIED
     """
     Processes text from a Google Document, deletes old entries, and adds new ones.
     """
@@ -239,7 +230,7 @@ def process_google_document_text(document_id: str, text_content: str, vector_sto
     if not vector_store or not embeddings:
         logging.error("process_google_document_text: Vector store or embeddings not provided.")
         return False
-        
+
     try:
         # Step 1: Delete existing entries for this document
         delete_document_from_vector_store(document_id, vector_store)
@@ -259,7 +250,7 @@ def process_google_document_text(document_id: str, text_content: str, vector_sto
             return True # Not an error, just nothing to add
 
         docs = [Document(page_content=chunk, metadata={'source': document_id}) for chunk in chunks]
-        
+
         # Step 3: Add new documents and save
         vector_store.add_documents(docs)
         vector_store.save_local(VECTOR_STORE_PATH)
@@ -296,21 +287,21 @@ def query_vector_store(query_text: str, vector_store: FAISS, k: int = 4):
 if __name__ == '__main__':
     logging.info("Starting RAG Handler test sequence...")
 
-    gemini_api_key_main_test = os.getenv('GEMINI_API_KEY')
-    if not gemini_api_key_main_test:
-        print("Please set the GEMINI_API_KEY environment variable to run tests.")
-        logging.warning("GEMINI_API_KEY not set, RAG tests will be skipped.")
+    openai_api_key_main_test = os.getenv('OPENAI_API_KEY') # MODIFIED
+    if not openai_api_key_main_test:
+        print("Please set the OPENAI_API_KEY environment variable to run tests.") # MODIFIED
+        logging.warning("OPENAI_API_KEY not set, RAG tests will be skipped.") # MODIFIED
         exit()
 
     vs = initialize_vector_store()
     if not vs:
         logging.error("Failed to initialize vector store. Aborting tests.")
         exit()
-        
+
     logging.info("Vector store initialized successfully.")
 
     try:
-        current_embeddings_for_test = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME, google_api_key=gemini_api_key_main_test)
+        current_embeddings_for_test = OpenAIEmbeddings(model="text-embedding-3-large", openai_api_key=openai_api_key_main_test) # MODIFIED
     except Exception as e:
         logging.error(f"Test block: Failed to create embeddings for testing: {e}")
         current_embeddings_for_test = None
@@ -322,9 +313,9 @@ if __name__ == '__main__':
     # Create a dummy text file for testing
     sample_txt_path = "sample_document.txt"
     with open(sample_txt_path, "w") as f:
-        f.write("This is a sample document for testing the RAG system with Gemini embeddings. ")
+        f.write("This is a sample document for testing the RAG system with OpenAI embeddings. ") # MODIFIED
         f.write("Langchain provides powerful tools for building AI applications. ")
-        f.write("Google's Gemini models offer state-of-the-art performance.")
+        f.write("OpenAI's models offer state-of-the-art performance.") # MODIFIED
 
     # Process the dummy file
     logging.info(f"Attempting to process {sample_txt_path}")
@@ -332,17 +323,17 @@ if __name__ == '__main__':
 
     if process_success_txt:
         logging.info(f"Successfully processed {sample_txt_path}")
-        
+
         # Query the vector store
-        logging.info("Querying for 'Gemini performance'")
-        query_results = query_vector_store("Gemini performance", vs)
+        logging.info("Querying for 'OpenAI embedding performance'") # MODIFIED
+        query_results = query_vector_store("OpenAI embedding performance", vs) # MODIFIED
         if query_results:
             for i, doc in enumerate(query_results):
                 # Filter out the 'init' document from results
                 if "init" not in doc.page_content:
                     logging.info(f"Query Result {i+1}: {doc.page_content[:100]}... (Source: {doc.metadata.get('source')})")
         else:
-            logging.info("No relevant results found for 'Gemini performance'.")
+            logging.info("No relevant results found for 'OpenAI embedding performance'.") # MODIFIED
     else:
         logging.warning(f"Failed to process {sample_txt_path}, skipping query tests.")
 
