@@ -77,75 +77,100 @@ PERSONA_NAME = "مساعد"
 BASE_PROMPT = (
     "You are Mosaed (مساعد), the AI assistant for Sakin Al-Awja Property Management (سكن العوجا لإدارة الأملاك). "
     "Your tone is friendly, approachable, and professional, always using a natural and engaging Saudi dialect of Arabic. "
-    "Vary your greetings and responses; instead of always using the same phrase, choose from a wide range of natural Saudi expressions like 'يا هلا بك', 'مرحباً بك', 'أهلاً وسهلاً', 'حياك الله وبياك', 'أسعد الله أوقاتك', 'بخدمتك', 'أبشر', 'سمّ', 'تفضل', 'تحت أمرك', 'كيف أقدر أساعدك اليوم؟', 'معك مساعد، أي خدمة؟'. "
+    "Vary your greetings and responses; instead of always using the same phrase, choose from a wide range of natural Saudi expressions. "
     "The key is to sound human and avoid repetition. Engage in a way that feels like a genuine conversation. "
-    "When users ask if you are a bot or something similar that is unrelated to property rentals, respond intelligently and naturally, this is the only exception to the rule for answering using given context only."
+    "When users ask if you are a bot or something similar that is unrelated to property rentals, respond intelligently and naturally; this is an exception to answering using only given context or state rules."
+
+    "CRITICAL OUTPUT RULE: Your entire response MUST be a single, clean JSON object. Do NOT include any text outside of this JSON object. The JSON object must have exactly two keys: "
+    "1. `response_text`: A string containing the text to be sent to the user."
+    "2. `next_state`: A string indicating the conversation state to transition to. Valid states are: GENERAL_INQUIRY, AWAITING_FURNISHED_STATUS, OWNER_PATH_UNFURNISHED, AWAITING_NEIGHBORHOOD, AWAITING_AREA, AWAITING_RENTAL_HISTORY, AWAITING_SMART_LOCK, OWNER_PATH_FURNISHED_FINAL."
+
+    "CRITICAL RULE: Always reply in the SAME language as the user's last message. If they use Arabic, your `response_text` must be in Arabic."
+    "TEXT RULES: No emojis, no markdown (*, _, etc.) in `response_text`. Use only clean plain text."
+
+    "You will be provided with the current `conversation_state` along with the user's message and any relevant context (Relevant Information Found). Your task is to process the input based on this state."
+
+    "CRITICAL RULE FOR CONTEXT USAGE: When the `conversation_state` is anything other than `GENERAL_INQUIRY`, you MUST ignore the 'Relevant Information Found' section (the RAG context) and focus exclusively on executing the current state's instructions. For `GENERAL_INQUIRY` state, you should use the 'Relevant Information Found' section as described under that state."
     
-    "CRITICAL RULE: Always reply in the SAME language as the user's last message. If they use Arabic, you must use Arabic."
+    "IMPORTANT RULE FOR ALL SCENARIOS: If you have just directed the user to a form (e.g., a Typeform link) to submit their details or complete a process (typically in states OWNER_PATH_UNFURNISHED or OWNER_PATH_FURNISHED_FINAL), DO NOT ask for their contact information (like phone number or email) in the `response_text` immediately afterwards. Assume the form will capture the necessary contact details. Only ask for contact information if it's essential for a step *before* form submission or if the user explicitly asks you to contact them and has not yet filled out a form."
 
-    "CRITICAL RULE FOR SEQUENTIAL INFORMATION GATHERING: If you need to ask the user multiple questions to gather information (for example, in the Property Owner scenario after determining the unit is furnished), you MUST ask only ONE question per message. You MUST then wait for the user's response to that question before asking the next one. DO NOT, under any circumstances, list multiple questions in a single message or send several questions without waiting for individual replies. Each question should be a separate turn in the conversation."
+    "--- START OF STATE DEFINITIONS ---"
 
-    "GENERAL CONTEXT ADHERENCE: You MUST strictly follow any contextual information provided (e.g., 'Relevant Information Found: ...'). This is especially true for property listings. See specific rules in SCENARIO 2."
+    "**State: GENERAL_INQUIRY**"
+    "   In this state, your primary goal is to determine the user's intent: are they a **Property Owner** wanting management/furnishing services, or a **Guest** looking to book a daily rental? You will also handle general questions."
+    "   You MUST use the 'Relevant Information Found' (RAG context from Google Docs) for guest inquiries and general questions if available."
+    "   1. **Determine Intent:**"
+    "      - If the user asks about 'تشغيل', 'إدارة أملاك' (property management), or how to list their property with you:"
+    "           `response_text`: (Acknowledge property owner interest, e.g., 'يا هلا بك، سعيد بخدمتك كمالك عقار.')"
+    "           `next_state`: AWAITING_FURNISHED_STATUS"
+    "      - If the user asks about booking, availability, prices for a stay, or property details (e.g., 'I want an apartment', 'Do you have villas?', 'How much is a stay?'):"
+    "           Follow SCENARIO 2 (Guest looking to book) logic below, using 'Relevant Information Found'. "
+    "           `next_state`: GENERAL_INQUIRY (unless a booking action directs elsewhere, for now, assume it remains general for follow-up guest questions)."
+    "      - If intent is unclear:"
+    "           `response_text`: 'حياك الله! هل تبحث عن حجز إقامة لدينا، أو أنت مالك عقار ومهتم بخدماتنا لإدارة الأملاك؟' (Welcome! Are you looking to book a stay, or are you a property owner interested in our management services?)"
+    "           `next_state`: GENERAL_INQUIRY"
+    "   2. **SCENARIO 2: The user is a Guest looking to book (operates within GENERAL_INQUIRY state):**"
+    "      Your primary source of information is the 'Relevant Information Found' section."
+    "      -   **Prioritize Information from Google Doc Context:**"
+    "          *   Carefully examine the 'Relevant Information Found' for any direct booking links, websites, or specific instructions. If found, `response_text` should present this to the user. E.g., if context says 'For bookings, visit example.com/book', guide them there."
+    "          *   If context has property details (names, descriptions, locations, prices), use this in `response_text`."
+    "          *   If context indicates 'No properties found' or is empty, inform the user naturally in `response_text`."
+    "      -   **Handling Queries if Context is Insufficient or General:**"
+    "          *   If context gives a general booking process/contact info: Share that in `response_text`."
+    "          *   Asking Clarifying Questions (if context lacks specifics for a booking query):"
+    "              *   Ask ONCE for desired city: 'حياك الله! في أي مدينة تبحث عن عقار؟' Add this to `response_text`. Wait for response."
+    "              *   If city known, and more details needed, ask about dates or guests (ONE AT A TIME) in subsequent interactions within `GENERAL_INQUIRY`."
+    "          *   Price Queries: If context has prices, provide them in `response_text`. If not, state 'Prices are available on the booking page: [link_from_context]' or ask for more details for checking."
+    "      -   **Information Gathering and Handoff (If Necessary):**"
+    "          *   If, after using context and clarifying questions, you have details (property interest, city, dates, guests) but no direct booking link for the refined query in context, `response_text` should be: 'Thank you. I have your details. For the next step, please visit our booking page at [general_booking_link_from_context] or our team will verify availability based on the information you provided and contact you shortly.'"
+    "      -   **Media from Context:**"
+    "          *   If 'Relevant Information Found' contains `[ACTION_SEND_IMAGE_GALLERY]` and user asks for photos of a specific property in context, your `response_text` MUST be ONLY that block. (The system will handle sending the actual images based on this exact string). `next_state` remains `GENERAL_INQUIRY`."
+    "          *   If it has `[VIDEO_LINK]`, include it naturally in your `response_text`."
+    "   3. **Property Owner FAQ (operates within GENERAL_INQUIRY state if asked outside the owner flow):**"
+    "      If the owner asks general questions NOT covered by the specific owner states:"
+    "      - About the service: `response_text`: 'حنا ندير الوحدة كاملة: من التسويق والتسعير إلى استقبال الضيوف والتنظيف. أرباحك توصلك أول كل شهر، بعقد واضح بدون عمولات خفية.' `next_state`: GENERAL_INQUIRY"
+    "      - About security: `response_text`: 'جميع وحداتنا فيها نظام دخول ذاتي آمن، وكل ضيف له رمز دخول خاص به.' `next_state`: GENERAL_INQUIRY"
+    "      - About expected profit: `response_text`: 'يعتمد الدخل على مساحة الوحدة، موقعها وتجهيزاتها. لو حاب تفاصيل أكثر، ممكن نحجز لك مكالمة نناقش فيها كل التفاصيل.' `next_state`: GENERAL_INQUIRY"
 
-    "COMMAND INTERPRETATION FROM CONTEXT: The 'Relevant Information Found' section (the context retrieved from documents) may contain directives for you. You should naturally understand and execute tasks, answer questions, or follow instructions found within this section. For example, if the context indicates 'The user should be directed to example.com/booking', you should guide the user to that URL. If it says 'Ask the user about their budget', you should ask the user about their budget. These directives from the context MUST be prioritized and followed precisely, overriding general conversation flow if specific instructions are given in the context."
+    "**State: AWAITING_FURNISHED_STATUS**"
+    "   The user has been identified as a Property Owner."
+    "   `response_text`: 'حياك الله، بخدمتك! لمعرفة أفضل طريقة لمساعدتك، هل الوحدة مؤثثة أو غير مؤثثة؟' (Welcome! To best assist you, is the unit furnished or unfurnished?)"
+    "   Based on user's response (which will come in the next turn):"
+    "   - If user indicates 'unfurnished' (e.g., 'غير مؤثثة', 'لا', 'فاضية'): `next_state`: OWNER_PATH_UNFURNISHED"
+    "   - If user indicates 'furnished' (e.g., 'مؤثثة', 'نعم', 'مفروشة'): `next_state`: AWAITING_NEIGHBORHOOD"
+    "   - If unclear, repeat the question gently or ask for clarification, `next_state`: AWAITING_FURNISHED_STATUS"
 
-    "Your primary goal is to determine the user's intent: are they a **Property Owner** wanting management/furnishing services, or a **Guest** looking to book a daily rental?"
+    "**State: OWNER_PATH_UNFURNISHED**"
+    "   The user's property is unfurnished."
+    "   `response_text`: 'ولا يهمك، عندنا خدمة تأثيث بمعايير فندقية وأسعار تنافسية، مهندسينا خبرتهم أكثر من 8 سنوات ومنفذين فوق 500 مشروع. عبّ النموذج ونرجع لك بتصميم يناسب وحدتك: https://form.typeform.com/to/vDKXMSaQ'"
+    "   `next_state`: GENERAL_INQUIRY"
 
-    "IMPORTANT RULE FOR ALL SCENARIOS: If you have just directed the user to a form (e.g., a Typeform link) to submit their details or complete a process, DO NOT ask for their contact information (like phone number or email) immediately afterwards. Assume the form will capture the necessary contact details. Only ask for contact information if it's essential for a step *before* form submission or if the user explicitly asks you to contact them and has not yet filled out a form."
+    "**State: AWAITING_NEIGHBORHOOD**"
+    "   User's property is furnished. Now asking for neighborhood."
+    "   `response_text`: 'ممتاز! لتقدير أفضل للوحدة، في أي حي تقع وحدتك؟'"
+    "   `next_state`: AWAITING_AREA"
 
-    "--- START OF SCENARIOS ---"
+    "**State: AWAITING_AREA**"
+    "   User's property is furnished, neighborhood provided (implicitly). Now asking for area."
+    "   `response_text`: 'عظيم. وكم مساحة الوحدة التقريبية بالمتر المربع؟'"
+    "   `next_state`: AWAITING_RENTAL_HISTORY"
 
-    "**SCENARIO 1: The user is a Property Owner.**"
-    "If the user asks about 'تشغيل', 'إدارة أملاك' (property management), or how to list their property with you, you MUST follow this sequence:"
+    "**State: AWAITING_RENTAL_HISTORY**"
+    "   User's property is furnished, area provided. Now asking for rental history."
+    "   `response_text`: 'هل لديك أي سجل إيجار سابق للوحدة؟ إذا كان الجواب نعم، هل يمكنك تقديم نبذة مختصرة عنه؟'"
+    "   `next_state`: AWAITING_SMART_LOCK"
 
-    "1.  **Determine if the unit is furnished.** Your first question should be to ascertain if the property unit is 'مؤثثة' (furnished) or 'غير مؤثثة' (unfurnished). Ask this naturally. For example: 'حياك الله، بخدمتك! لمعرفة أفضل طريقة لمساعدتك، هل الوحدة مؤثثة أو غير مؤثثة؟'"
+    "**State: AWAITING_SMART_LOCK**"
+    "   User's property is furnished, rental history (or lack thereof) provided. Now asking about smart lock."
+    "   `response_text`: 'سؤال أخير قبل ما نرسل لك رابط تعبئة البيانات، هل الوحدة مجهزة حالياً بنظام دخول ذكي (Smart Lock)؟'"
+    "   `next_state`: OWNER_PATH_FURNISHED_FINAL"
 
-    "2.  **If the user says it is NOT furnished ('غير مؤثثة'):**"
-        "   Respond with the following text and link. Do not change the wording."
-        "   'ولا يهمك، عندنا خدمة تأثيث بمعايير فندقية وأسعار تنافسية، مهندسينا خبرتهم أكثر من 8 سنوات ومنفذين فوق 500 مشروع. عبّ النموذج ونرجع لك بتصميم يناسب وحدتك: https://form.typeform.com/to/vDKXMSaQ'"
+    "**State: OWNER_PATH_FURNISHED_FINAL**"
+    "   All details for furnished property gathered."
+    "   `response_text`: 'شكراً لك على كل المعلومات. الآن، يرجى تعبئة النموذج التالي حتى نتمكن من البدء في إجراءات التشغيل لوحدتك: https://form.typeform.com/to/eFGv4yhC'"
+    "   `next_state`: GENERAL_INQUIRY"
 
-    "3.  **If the user says it IS furnished ('مؤثثة'):**"
-        "   Acknowledge their response (e.g., 'ممتاز!'). Then, consult the retrieved information (context) about our property management services. If this context indicates specific details are needed (such as unit area, neighborhood, rental history, smart lock availability), ask for these details ONE BY ONE. Wait for the user's answer before asking the next question. Phrase these questions based on the requirements suggested by the retrieved service information."
-        "   **After you have gathered all necessary details based on the context**, provide the final instructions and link:"
-        "   'بعد ما توفرت المعلومات اللازمة، عبّ النموذج التالي عشان نبدأ إجراءات التشغيل: https://form.typeform.com/to/eFGv4yhC'"
-    
-    "4.  **Property Owner FAQ:** If the owner asks other questions, use these answers:"
-        "   -   About the service: 'حنا ندير الوحدة كاملة: من التسويق والتسعير إلى استقبال الضيوف والتنظيف. أرباحك توصلك أول كل شهر، بعقد واضح بدون عمولات خفية.'"
-        "   -   About security: 'جميع وحداتنا فيها نظام دخول ذاتي آمن، وكل ضيف له رمز دخول خاص به.'"
-        "   -   About expected profit: 'يعتمد الدخل على مساحة الوحدة، موقعها وتجهيزاتها. لو حاب تفاصيل أكثر، ممكن نحجز لك مكالمة نناقش فيها كل التفاصيل.'"
-
-    "**SCENARIO 2: The user is a Guest looking to book.**"
-    "If the user asks about booking, availability, prices for a stay, or property details (e.g., 'I want an apartment', 'Do you have villas?', 'How much is a stay?'), your primary source of information is the 'Relevant Information Found' section, which is derived from our Google Docs."
-
-    "   **1. Prioritize Information from Google Doc Context:**"
-    "        *   Carefully examine the 'Relevant Information Found' for any direct booking links, websites, or specific instructions on how the user should proceed with a booking. If such information exists, you MUST present it to the user. For example, if the context says 'For bookings, please visit example.com/book', guide the user there."
-    "        *   If the context provides details about properties (names, descriptions, locations, prices), use this information to answer the user's questions. You should only refer to properties and details found in this context."
-    "        *   If the context indicates 'No properties found matching your criteria' or is empty, inform the user naturally. Do not invent property details."
-
-    "   **2. Handling Queries if Context is Insufficient or General:**"
-    "        *   **If the Google Doc context provides a general booking process or contact information rather than specific property details or a direct booking link for a query:** Share that process or contact information. For example: 'You can see our available properties and book directly through our website at [website_link_from_context].'"
-    "        *   **Asking Clarifying Questions:** If the user's query is about booking but the 'Relevant Information Found' (from Google Docs) lacks specific details to directly answer or provide a booking link (e.g., the context is about general services, or the user's query is too vague like 'I want to book a place'):"
-    "            *   You can then ask clarifying questions to help narrow down their needs. This helps in either providing more relevant information from the existing context or preparing for a handoff if needed."
-    "            *   For example, ask ONCE for the desired city: 'حياك الله! في أي مدينة تبحث عن عقار؟' (Welcome! In which city are you looking for a property?). Wait for their response."
-    "            *   If city is known (either from them or context), and you still need more details to assist (e.g., context is very general), you might then ask about dates or number of guests, ONE AT A TIME. Example: 'To check availability, could you please tell me your desired check-in date?'"
-    "        *   **Price Queries:** If the user asks for a price and the Google Doc context contains pricing information (e.g., 'Villa Raha: 500 SAR/night on weekdays, 700 SAR/night on weekends'), provide it. If specific prices aren't in the context, you can state 'Prices are available on the booking page: [link_from_context]' or 'Please provide desired dates and city so I can check further based on our available information.'"
-
-    "   **3. Information Gathering and Handoff (If Necessary):**"
-    "        *   If, after consulting the Google Doc context and asking necessary clarifying questions, you have gathered details like property interest (if any specific one is mentioned in context), city, dates, and number of guests, and the context does not provide a direct booking link for this specific refined query, you can then hand off."
-    "        *   Respond with: 'Thank you. I have your details. For the next step, please visit our booking page at [general_booking_link_from_context] or our team will verify availability based on the information you provided and contact you shortly.'"
-    "        *   Only collect information if it's useful for either directing them to a link from the context or for a handoff. If the context clearly gives a link for all bookings, prioritize that."
-
-    "   **4. Media from Context:**"
-    "        *   If the 'Relevant Information Found' (Google Doc context) contains `[ACTION_SEND_IMAGE_GALLERY]` and the user asks for photos of a specific property mentioned in the context, your entire response must be ONLY that block. If it has `[VIDEO_LINK]`, include it naturally in your text when describing the property from the context."
-
-    "   **General Guidance for Guest Scenario:**"
-    "        *   Your main goal is to use the 'Relevant Information Found' (from Google Docs) to guide the user. If it has a clear path to booking (like a URL), provide that. "
-    "        *   Avoid inventing property details or processes not mentioned in the context. Stick to the information retrieved from our documents."
-
-    "--- END OF SCENARIOS ---"
-    
-    "If the user's intent is unclear, ask for clarification: 'حياك الله! هل تبحث عن حجز إقامة لدينا، أو أنت مالك عقار ومهتم بخدماتنا لإدارة الأملاك؟' (Welcome! Are you looking to book a stay, or are you a property owner interested in our management services?)"
-    "TEXT RULES: No emojis, no markdown (*, _, etc.). Use only clean plain text."
+    "--- END OF STATE DEFINITIONS ---"
 )
 
 # ─── AI Model and API Client Initialization ────────────────────────────────────
@@ -170,30 +195,46 @@ executor = ThreadPoolExecutor(max_workers=2)
 CONV_DIR = 'conversations'
 os.makedirs(CONV_DIR, exist_ok=True)
 MAX_HISTORY_TURNS_TO_LOAD = 6
+DEFAULT_STATE = "GENERAL_INQUIRY"
 
 def load_history(uid):
     path = os.path.join(CONV_DIR, f"{uid}.json")
     if not os.path.isfile(path):
-        return []
+        return [], DEFAULT_STATE  # New user, default state
+
     try:
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
 
+        history_list = []
+        current_state = DEFAULT_STATE
+
+        if isinstance(data, dict) and "history" in data and "state" in data:
+            # New format: {"state": "STATE_NAME", "history": [...]}
+            history_items = data.get("history", [])
+            current_state = data.get("state", DEFAULT_STATE)
+        elif isinstance(data, list):
+            # Old format: [...]
+            history_items = data
+            # current_state remains DEFAULT_STATE
+            logging.info(f"Old format history file found for {uid}. Will use default state: {DEFAULT_STATE}")
+        else:
+            # Unknown format or corrupted
+            logging.warning(f"Unknown or corrupted history file format for {uid}. Using defaults.")
+            return [], DEFAULT_STATE
+
         langchain_history = []
-        for item in data:
+        for item in history_items:
             if isinstance(item, dict) and 'role' in item:
                 message_content = ""
                 found_content = False
 
-                # 1. Check for 'content' field first
                 if isinstance(item.get('content'), str):
                     message_content = item['content']
                     found_content = True
-
-                # 2. Else, check for 'parts' field (backward compatibility)
-                elif 'parts' in item:
+                elif 'parts' in item: # Backward compatibility for old format
                     if isinstance(item['parts'], list) and len(item['parts']) > 0:
-                        message_content = str(item['parts'][0]) # Ensure content is string
+                        message_content = str(item['parts'][0])
                         found_content = True
                     else:
                         logging.warning(f"Item for {uid} has 'parts' field, but it's empty or not a list: {item}")
@@ -203,24 +244,24 @@ def load_history(uid):
 
                 if item['role'] == 'user':
                     langchain_history.append(HumanMessage(content=message_content))
-                elif item['role'] == 'model': # Matching the role used in save_history
+                elif item['role'] == 'model':
                     langchain_history.append(AIMessage(content=message_content))
-                # Silently ignore other roles for now, or log if necessary
             else:
                 logging.warning(f"Skipping malformed item (missing 'role' or not a dict) in history for {uid}: {item}")
 
-        # Apply MAX_HISTORY_TURNS_TO_LOAD (note: each turn is a user + model message)
         if len(langchain_history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
-            return langchain_history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
-        return langchain_history
-    except json.JSONDecodeError as jde:
-        logging.error(f"Corrupted history file for {uid}: {jde}. Starting with fresh history.", exc_info=True)
-        return []
-    except Exception as e:
-        logging.error(f"Error loading or processing history for {uid}: {e}", exc_info=True)
-        return []
+            langchain_history = langchain_history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
 
-def save_history(uid, history):
+        return langchain_history, current_state
+
+    except json.JSONDecodeError as jde:
+        logging.error(f"Corrupted history file for {uid}: {jde}. Starting with fresh history and default state.", exc_info=True)
+        return [], DEFAULT_STATE
+    except Exception as e:
+        logging.error(f"Error loading or processing history for {uid}: {e}. Using defaults.", exc_info=True)
+        return [], DEFAULT_STATE
+
+def save_history(uid, history, state):
     path = os.path.join(CONV_DIR, f"{uid}.json")
     serializable_history = []
     for msg in history:
@@ -228,16 +269,21 @@ def save_history(uid, history):
             serializable_history.append({'role': 'user', 'content': msg.content})
         elif isinstance(msg, AIMessage):
             serializable_history.append({'role': 'model', 'content': msg.content})
-        elif isinstance(msg, SystemMessage): # Though not explicitly added in webhook, good to handle
+        elif isinstance(msg, SystemMessage):
             serializable_history.append({'role': 'system', 'content': msg.content})
         elif isinstance(msg, dict) and 'role' in msg and 'content' in msg:
-            serializable_history.append(msg) # Already in correct dict format
+            serializable_history.append(msg)
         else:
             logging.warning(f"Skipping unknown message type in history for {uid} during save: {type(msg)}")
 
+    data_to_save = {
+        "state": state,
+        "history": serializable_history
+    }
+
     try:
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(serializable_history, f, indent=2, ensure_ascii=False)
+            json.dump(data_to_save, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logging.error(f"Error saving history for {uid}: {e}", exc_info=True)
 
@@ -266,159 +312,87 @@ def is_property_related_query(text):
     return any(keyword in text_lower for keyword in keywords)
 
 # ─── Generate response from LLM with RAG ───────────────────────────────────
-def get_llm_response(text, sender_id, history_dicts=None, retries=3):
+def get_llm_response(text, sender_id, history_dicts=None, current_state="GENERAL_INQUIRY", retries=3):
     if not AI_MODEL:
-        return {'type': 'text', 'content': "AI Model not configured."}
+        # This dictionary structure is for consistency with the expected final return.
+        return {
+            'response_text': "AI Model not configured.",
+            'next_state': current_state # Return current_state if AI model fails
+        }
 
-    # Step 1: Intent and Filter Extraction
-    analysis_prompt = f"""
-    Analyze the user's request: '{text}'
-    Determine if it's a property search or a general question.
-    Respond with a JSON object with "intent" and "filters".
-
-    Supported filter keys: `WeekdayPrice`, `WeekendPrice`, `MonthlyPrice`, `Guests`, `City`, `Neighborhood`, `PropertyName`.
-    - For a generic price query like "under 1000", use the `WeekdayPrice` key for filtering.
-    - For numeric keys, the operator can be '<', '>', or '='.
-    - If the user's query is property-related and mentions a city, especially common Saudi city names like Riyadh, Jeddah, Dammam, etc., ensure "intent" is "property_search" and extract the city into the `City` filter.
-    - Example for city extraction: "I want an apartment in Jeddah"
-    {{
-      "intent": "property_search",
-      "filters": {{
-        "City": {{ "operator": "=", "value": "Jeddah" }}
-      }}
-    }}
-
-    Example 1: "show me properties below 1000 sar in riyadh"
-    {{
-      "intent": "property_search",
-      "filters": {{
-        "WeekdayPrice": {{ "operator": "<", "value": 1000 }},
-        "City": {{ "operator": "=", "value": "riyadh" }}
-      }}
-    }}
-    - If the user's query appears to be a response to a question about price type (e.g., "weekday or weekend?"), the intent should be "price_clarification".
-    - For "price_clarification" intent, "filters" MUST include "PropertyName" (the name of the property being discussed, try to infer this from conversation history if not explicitly in the current user message) and "price_type" (e.g., "weekday", "weekend", "monthly").
-    Example 2 (User responding to "For PropertyX, weekday or weekend price?"): "weekend please"
-    {{
-      "intent": "price_clarification",
-      "filters": {{
-        "PropertyName": "PropertyX",
-        "price_type": "weekend"
-      }}
-    }}
-    Example 3 (User responding to "For PropertyY, weekday or weekend price?"): "يوم عادي"
-    {{
-      "intent": "price_clarification",
-      "filters": {{
-        "PropertyName": "PropertyY",
-        "price_type": "weekday"
-      }}
-    }}
-    Example 4 (User asking for monthly price after property discussion): "what about monthly for PropertyZ?"
-    {{
-      "intent": "price_clarification",
-      "filters": {{
-        "PropertyName": "PropertyZ",
-        "price_type": "monthly"
-      }}
-    }}
-    Respond with ONLY the JSON object.
-    """
-    try:
-        analysis_response = AI_MODEL.invoke([HumanMessage(content=analysis_prompt)])
-        response_text = analysis_response.content.strip()
-        if response_text.startswith('```json'):
-            response_text = response_text[len('```json'):].strip()
-        if response_text.endswith('```'):
-            response_text = response_text[:-len('```')].strip()
-        analysis_json = json.loads(response_text)
-        intent = analysis_json.get("intent")
-        filters = analysis_json.get("filters")
-    except Exception as e:
-        logging.error(f"Failed to analyze user query with LLM: {e}. Defaulting to general question.")
-        intent = "general_question"
-        filters = None
-
-    # Step 2: Logic Execution Based on Intent
     context_str = ""
-
-    # The primary way to get context is through RAG from vector store (Google Docs content)
-    # This happens regardless of initial intent, but after intent analysis for potential filters.
-    vector_store = current_app.config.get('VECTOR_STORE')
-    if vector_store:
-        # We pass the original 'text' for RAG query,
-        # potentially could use 'filters' in future to refine RAG query if needed
-        retrieved_docs = query_vector_store(text, vector_store, k=3)
-        if retrieved_docs:
-            context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
-            logging.info(f"RAG generated context: {context_str}")
+    if current_state == "GENERAL_INQUIRY":
+        vector_store = current_app.config.get('VECTOR_STORE')
+        if vector_store:
+            retrieved_docs = query_vector_store(text, vector_store, k=3)
+            if retrieved_docs:
+                context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
+                logging.info(f"RAG generated context for GENERAL_INQUIRY: {context_str}")
+            else:
+                logging.info("RAG: No documents found from vector store for GENERAL_INQUIRY.")
         else:
-            logging.info("RAG: No documents found from vector store.")
+            logging.warning("RAG: Vector store not available for GENERAL_INQUIRY.")
+
+        # Generic message if RAG context is empty and it's a property query (only for GENERAL_INQUIRY)
+        if not context_str and is_property_related_query(text):
+            context_str = "\n\nRelevant Information Found:\nI currently don't have specific details for this property query from my documents. Please ask more general questions or I can try to help with other information."
+            logging.info("No RAG context for property query in GENERAL_INQUIRY. Added generic message.")
     else:
-        logging.warning("RAG: Vector store not available.")
+        logging.info(f"Skipping RAG search as current_state is '{current_state}'.")
 
-    # If intent analysis yielded specific structured data (like property name for price clarification),
-    # and you want to explicitly pass that to the LLM in a structured way, you could append it here.
-    # For now, the LLM will rely on the BASE_PROMPT and the context_str from RAG.
+    # Constructing the prompt for the LLM
+    # The BASE_PROMPT already instructs the LLM on how to use conversation_state and Relevant Information Found.
+    # We just need to ensure the input text clearly labels these pieces of information.
 
-    if intent == "price_clarification" and filters:
-        # Example: If filters contain PropertyName and price_type,
-        # you might want to ensure this specific info is highlighted for the LLM.
-        # However, the main information source should still be context_str.
-        # This section can be refined based on how well the LLM handles these with RAG context alone.
-        prop_name_filter_val = filters.get("PropertyName", {}).get("value") or filters.get("PropertyName")
-        price_type_filter_val = filters.get("price_type", {}).get("value") or filters.get("price_type")
+    prompt_input_parts = [f"Current Conversation State: {current_state}"]
+    if context_str: # Only add "Relevant Information Found" if it's not empty
+        prompt_input_parts.append(context_str)
+    prompt_input_parts.append(f"\nUser Question: {text}")
 
-        if prop_name_filter_val and price_type_filter_val:
-            # You could add a note to context_str or rely on LLM to pick it up from the user query + RAG context
-            logging.info(f"Price clarification intent for: {prop_name_filter_val}, type: {price_type_filter_val}. LLM will use RAG context.")
-        else:
-            logging.warning(f"Price clarification intent for '{text}' but filters were missing or malformed: {filters}")
-            # context_str += "\nNote to AI: User is asking for a price clarification, but details are missing. Use available context."
+    final_prompt_to_llm = "\n".join(prompt_input_parts)
 
-    elif intent == "property_search" and filters:
-        city_filter_value = filters.get("City", {}).get("value")
-        if city_filter_value:
-            logging.info(f"Property search intent in city: {city_filter_value}. LLM will use RAG context.")
-            # context_str += f"\nNote to AI: User is searching for properties, possibly in {city_filter_value}. Prioritize information from the retrieved context."
-        else:
-            logging.info("Property search intent with no specific city. LLM will use RAG context.")
+    if history_dicts is None:
+        history_dicts = []
 
-
-    # If after RAG, context_str is still empty, and it's a property related query,
-    # you might add a generic message. But the goal is to rely on RAG.
-    if not context_str and is_property_related_query(text):
-        context_str = "Relevant Information Found:\nI currently don't have specific details for this property query from my documents. Please ask more general questions or I can try to help with other information."
-        logging.info("No RAG context and it's a property query. Added generic message.")
-
-
-    # Step 3: Generate Final Response
-    # Ensure context_str is prepared before this line
-    final_prompt_to_llm = (context_str + f"\n\nUser Question: {text}" if context_str
-                           else text)
     messages = [SystemMessage(content=BASE_PROMPT)] + history_dicts + [HumanMessage(content=final_prompt_to_llm)]
 
+    raw_llm_output = ""
     for attempt in range(retries):
         try:
             resp = AI_MODEL.invoke(messages)
             raw_llm_output = resp.content.strip()
 
-            if raw_llm_output.startswith("[ACTION_SEND_IMAGE_GALLERY]"):
-                lines = raw_llm_output.splitlines()
-                urls = [line for line in lines[1:-1] if line.strip().startswith('http')]
-                caption = lines[-1] if len(lines) > 1 else "Here are the images:"
-                return {'type': 'gallery', 'urls': urls, 'caption': caption}
-            else:
-                response_text = re.sub(r'\[ACTION_SEND_IMAGE_GALLERY\].*?(\n|$)', '', raw_llm_output, flags=re.DOTALL)
-                response_text = re.sub(r'\[VIDEO_LINK\]:.*?\n', '', response_text).strip()
-                return {'type': 'text', 'content': response_text}
-        except Exception as e:
-            logging.warning(f"LLM API error on attempt {attempt+1}/{retries}: {e}")
-            if attempt + 1 == retries:
-                return {'type': 'text', 'content': "I am having trouble processing your request. Please try again."}
-            time.sleep((2 ** attempt))
+            # Attempt to parse JSON
+            parsed_llm_response = json.loads(raw_llm_output)
+            response_text = parsed_llm_response.get("response_text")
+            next_state = parsed_llm_response.get("next_state")
 
-    return {'type': 'text', 'content': "I could not generate a response after multiple attempts."}
+            if response_text is not None and next_state is not None:
+                # Successfully parsed and keys are present
+                logging.info(f"LLM JSON Response: response_text='{response_text}', next_state='{next_state}'")
+                return {'response_text': response_text, 'next_state': next_state}
+            else:
+                missing_keys = []
+                if response_text is None: missing_keys.append("response_text")
+                if next_state is None: missing_keys.append("next_state")
+                logging.error(f"LLM response missing critical keys: {', '.join(missing_keys)}. Raw: '{raw_llm_output}'")
+
+        except json.JSONDecodeError as jde:
+            logging.error(f"Failed to parse LLM JSON response on attempt {attempt+1}. Error: {jde}. Raw: '{raw_llm_output}'")
+        except Exception as e:
+            logging.warning(f"LLM API error or unexpected issue on attempt {attempt+1}/{retries}: {e}. Raw output: '{raw_llm_output}'")
+
+        if attempt + 1 < retries:
+            time.sleep((2 ** attempt))
+        else: # Last attempt failed
+            logging.error(f"All {retries} attempts to get valid LLM response failed. Raw output on last attempt: '{raw_llm_output}'")
+            break # Exit loop after last attempt
+
+    # Default response if all retries fail or parsing errors persist
+    default_response_text = "أواجه صعوبة في فهم طلبك حالياً. هل يمكنك إعادة صياغته؟"
+    default_next_state = "GENERAL_INQUIRY"
+    logging.info(f"Returning default response: response_text='{default_response_text}', next_state='{default_next_state}'")
+    return {'response_text': default_response_text, 'next_state': default_next_state}
 
 # ─── Health Check Endpoint ─────────────────────────────────────────────────────
 @app.route('/', methods=['GET'])
@@ -583,34 +557,56 @@ def webhook():
                 continue
 
             user_id = ''.join(c for c in sender if c.isalnum())
-            history = load_history(user_id)
-            llm_response_data = get_llm_response(body_for_fallback, sender, history)
-
-            final_model_response_for_history = ""
-            if llm_response_data.get('type') == 'gallery':
-                gallery = llm_response_data
-                if gallery.get('urls'):
-                    logging.info(f"Sending gallery to {sender}.")
-                    for i, url in enumerate(gallery['urls']):
-                        send_whatsapp_image_message(sender, gallery['caption'] if i == 0 else "", url)
-                        time.sleep(1.5)
-                    final_model_response_for_history = f"[Sent gallery of {len(gallery['urls'])} images]"
+            history_messages, current_conversation_state = load_history(user_id)
             
-            elif llm_response_data.get('type') == 'text' and llm_response_data.get('content'):
-                text_content = llm_response_data['content']
-                final_model_response_for_history = text_content
-                chunks = split_message(text_content)
+            # Pass current_conversation_state to get_llm_response
+            llm_output = get_llm_response(body_for_fallback, sender, history_messages, current_conversation_state)
+
+            response_text_to_user = llm_output['response_text']
+            next_conversation_state = llm_output['next_state']
+
+            # Check if the response_text is an ACTION_SEND_IMAGE_GALLERY command
+            if response_text_to_user.startswith("[ACTION_SEND_IMAGE_GALLERY]"):
+                lines = response_text_to_user.splitlines()
+                # Ensure there are at least 3 lines: ACTION_SEND_IMAGE_GALLERY, url, caption
+                if len(lines) >= 2: # Expecting at least marker and one URL. Caption is optional.
+                    urls = [line for line in lines[1:-1] if line.strip().startswith('http')]
+                    caption = lines[-1] if len(lines) > 1 and not lines[-1].strip().startswith('http') else "Here are the images:"
+
+                    if urls: # Check if any URLs were actually extracted
+                        logging.info(f"Sending gallery to {sender} based on LLM response.")
+                        for i, url in enumerate(urls):
+                            # Send caption only with the first image, or if it's the only content after URLs
+                            current_caption = caption if i == 0 else ""
+                            send_whatsapp_image_message(sender, current_caption, url)
+                            time.sleep(1.5) # Stagger messages
+                        final_model_response_for_history = f"[Sent gallery of {len(urls)} images with caption: '{caption}']"
+                    else: # Fallback if parsing gallery from LLM fails
+                        logging.warning(f"LLM indicated gallery, but no URLs found or format was incorrect: {response_text_to_user}")
+                        send_whatsapp_message(sender, "I tried to send images, but there was an issue. Please try again.")
+                        final_model_response_for_history = "[Attempted to send gallery, but failed due to formatting]"
+                else: # Fallback if format is incorrect
+                    logging.warning(f"LLM indicated gallery, but format was incorrect: {response_text_to_user}")
+                    send_whatsapp_message(sender, "I tried to send images, but there was an issue. Please try again.")
+                    final_model_response_for_history = "[Attempted to send gallery, but failed due to formatting]"
+            else:
+                # Standard text response
+                final_model_response_for_history = response_text_to_user
+                chunks = split_message(response_text_to_user)
                 for chunk in chunks:
                     send_whatsapp_message(sender, chunk)
-                    time.sleep(1)
+                    time.sleep(1) # Stagger messages
 
-            # Append as Langchain message objects
-            history.append(HumanMessage(content=body_for_fallback))
-            history.append(AIMessage(content=final_model_response_for_history))
+            # Append Langchain message objects to history
+            history_messages.append(HumanMessage(content=body_for_fallback))
+            history_messages.append(AIMessage(content=final_model_response_for_history)) # Save the actual action/text
 
-            if len(history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
-                history = history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
-            save_history(user_id, history)
+            # Trim history
+            if len(history_messages) > MAX_HISTORY_TURNS_TO_LOAD * 2:
+                history_messages = history_messages[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
+
+            # Save history with the new state returned by the LLM
+            save_history(user_id, history_messages, next_conversation_state)
 
         return jsonify(status='success'), 200
 
