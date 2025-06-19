@@ -362,6 +362,18 @@ def get_llm_response(text, sender_id, history_dicts=None, current_state="GENERAL
             resp = AI_MODEL.invoke(messages)
             raw_llm_output = resp.content.strip()
 
+            # Clean potential markdown fences if LLM wraps JSON in them
+            if raw_llm_output.startswith("```json") and raw_llm_output.endswith("```"):
+                # Remove the first line (```json) and last line (```)
+                lines = raw_llm_output.splitlines()
+                if len(lines) > 1: # Ensure there's content between the fences
+                    raw_llm_output = "\n".join(lines[1:-1]).strip()
+                else: # Handle case where it might be just ```json``` or similar
+                    raw_llm_output = "" # Set to empty to cause JSONDecodeError handled below
+            elif raw_llm_output.startswith("```") and raw_llm_output.endswith("```"):
+                # More general case for just ``` wrapping
+                 raw_llm_output = raw_llm_output[3:-3].strip()
+
             # Attempt to parse JSON
             parsed_llm_response = json.loads(raw_llm_output)
             response_text = parsed_llm_response.get("response_text")
