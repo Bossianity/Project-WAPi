@@ -98,6 +98,13 @@ is_globally_paused = False
 paused_conversations = set()
 active_conversations_during_global_pause = set()
 
+# --- Processed Message IDs Cache (for Issue #2: Deduplication) ---
+PROCESSED_MESSAGE_IDS = set()
+# To manage cache size, we'll store (timestamp, message_id) tuples
+# and periodically clean out old entries.
+MESSAGE_ID_CACHE_EXPIRY_SECONDS = 300 # 5 minutes
+processed_message_timestamps = [] # Stores (timestamp, message_id)
+
 # --- Interactive Flow State & Greeting Keywords ---
 # Verified imports and component variable names on 2023-12-16
 users_in_interactive_flow = set() # Temporary state for users in the new interactive flow
@@ -548,18 +555,49 @@ def webhook():
         if not incoming_messages:
             return jsonify(status='success_no_messages'), 200
 
+        # --- Cache Cleanup for Processed Message IDs ---
+        # (Could be done less frequently, e.g., via a scheduled job or sampling,
+        # but doing it on each webhook call is simple for now)
+        current_time = time.time()
+        global processed_message_timestamps, PROCESSED_MESSAGE_IDS
+        # Filter out old message IDs
+        valid_message_timestamps = []
+        ids_to_keep = set()
+        for entry_time, msg_id_to_check in processed_message_timestamps:
+            if current_time - entry_time < MESSAGE_ID_CACHE_EXPIRY_SECONDS:
+                valid_message_timestamps.append((entry_time, msg_id_to_check))
+                ids_to_keep.add(msg_id_to_check)
+        processed_message_timestamps = valid_message_timestamps
+        PROCESSED_MESSAGE_IDS = ids_to_keep
+        # --- End Cache Cleanup ---
+
         for message in incoming_messages:
+            # --- Deduplication Check (Issue #2) ---
+            # Assuming 'id' is the field for the unique message identifier from Whapi
+            # This field name might need verification based on actual Whapi payload.
+            message_id = message.get('id')
+            if not message_id:
+                # If a message has no ID, we can't deduplicate it. Log and process.
+                logging.warning(f"Webhook: Message received without a unique 'id'. Cannot perform deduplication for this message: {message.get('type', 'unknown type')} from {message.get('from', 'unknown sender')}")
+            elif message_id in PROCESSED_MESSAGE_IDS:
+                logging.warning(f"Webhook: Duplicate message_id '{message_id}' received. Skipping.")
+                continue
+            else:
+                PROCESSED_MESSAGE_IDS.add(message_id)
+                processed_message_timestamps.append((time.time(), message_id))
+            # --- End Deduplication Check ---
+
             if message.get('from_me'):
                 continue
 
-            sender = message.get('from') # Original line
-            if not sender: # Add a check for sender validity
+            sender = message.get('from')
+            if not sender:
                 logging.warning("Webhook: Message received without a 'from' field. Skipping.")
                 continue
-            sender = format_target_user_id(sender) # Normalize the sender ID here
+            sender = format_target_user_id(sender)
 
             msg_type = message.get('type')
-            body_for_fallback = None # This will store what's saved to history or passed to LLM
+            body_for_fallback = None
             clicked_button_id = None # Specific for button clicks
             clicked_list_item_id = None # Specific for list selections
 
@@ -571,6 +609,47 @@ def webhook():
                 if message.get('media', {}).get('caption'):
                     body_for_fallback += f" with caption: {message['media']['caption']}"
                 logging.info(f"Webhook: Received {msg_type} message from {sender}.")
+            elif msg_type == 'image' or msg_type == 'video':
+                body_for_fallback = f"[User sent a {msg_type}]"
+                if message.get('media', {}).get('caption'):
+                    body_for_fallback += f" with caption: {message['media']['caption']}"
+                logging.info(f"Webhook: Received {msg_type} message from {sender}.")
+            elif msg_type == 'reply': # Handling for Issue #3, based on logs
+                logging.info(f"Webhook: Received message of type 'reply' from {sender}. Attempting to process as interactive reply.")
+                # Whapi.Cloud might send button presses as type 'reply'.
+                # The actual button ID might be in a 'reply' object or 'interactive' object within the message.
+                # Let's try to find the button/list reply information.
+                # This is an educated guess on the structure.
+                # Option 1: The 'interactive' block is still present even if type is 'reply'
+                interactive_payload = message.get('interactive')
+                if not interactive_payload and 'context' in message and 'entry_point' in message['context']: # For some specific reply types
+                     interactive_payload = message
+
+                if interactive_payload: # If 'interactive' object exists
+                    interactive_type = interactive_payload.get('type')
+                    if interactive_type == 'button_reply':
+                        button_id = interactive_payload.get('button_reply', {}).get('id')
+                        button_title = interactive_payload.get('button_reply', {}).get('title')
+                        logging.info(f"Webhook: Type 'reply' contained button_reply. Sender: {sender}, Button ID: {button_id}, Title: {button_title}")
+                        body_for_fallback = f"[User clicked button (via type reply): {button_title} ({button_id})]"
+                        clicked_button_id = button_id
+                    elif interactive_type == 'list_reply':
+                        list_item_id = interactive_payload.get('list_reply', {}).get('id')
+                        list_item_title = interactive_payload.get('list_reply', {}).get('title')
+                        logging.info(f"Webhook: Type 'reply' contained list_reply. Sender: {sender}, Item ID: {list_item_id}, Title: {list_item_title}")
+                        body_for_fallback = f"[User selected list item (via type reply): {list_item_title} ({list_item_id})]"
+                        clicked_list_item_id = list_item_id
+                    else:
+                        logging.warning(f"Webhook: Message type 'reply' from {sender} had an 'interactive' payload but unknown interactive type: {interactive_type}. Payload: {interactive_payload}")
+                        body_for_fallback = "[User sent a 'reply' with unrecognized interactive data]"
+                else:
+                    # Option 2: Data is directly in a 'reply' object (less common for interactive replies from WhatsApp itself)
+                    # This is a placeholder for alternative structures. The primary guess is above.
+                    # For now, if 'interactive' payload is missing, we can't process it as a button/list click.
+                    logging.warning(f"Webhook: Message type 'reply' from {sender} did not contain a recognized 'interactive' payload. Full message: {message}")
+                    body_for_fallback = "[User sent a 'reply' message, content unknown/unhandled]"
+                # The rest of the logic for handling clicked_button_id/clicked_list_item_id is shared with 'interactive' type below.
+
             elif msg_type == 'interactive':
                 logging.info(f"Webhook: Received interactive message from {sender}.")
                 interactive_data = message.get('interactive', {})
@@ -581,8 +660,7 @@ def webhook():
                     button_title = interactive_data.get('button_reply', {}).get('title')
                     logging.info(f"Webhook: Interactive Type: button_reply, Sender: {sender}, Button ID: {button_id}, Title: {button_title}")
                     body_for_fallback = f"[User clicked button: {button_title} ({button_id})]"
-                    clicked_button_id = button_id # Store the ID for potential logic in step 5
-                    # TODO: In Step 5, map button_id to a new message_name and call send_custom_interactive_message
+                    clicked_button_id = button_id
                 elif interactive_type == 'list_reply':
                     list_item_id = interactive_data.get('list_reply', {}).get('id')
                     list_item_title = interactive_data.get('list_reply', {}).get('title')
@@ -593,6 +671,8 @@ def webhook():
                     logging.warning(f"Webhook: Received unknown interactive type: {interactive_type} from {sender}. Full data: {interactive_data}")
                     body_for_fallback = "[User sent an unknown interactive element]"
 
+            # Common logic for both 'interactive' and 'reply' types if they resulted in a clicked_button_id or clicked_list_item_id
+            if clicked_button_id or clicked_list_item_id:
                 user_id_for_history = ''.join(c for c in sender if c.isalnum())
                 history = load_history(user_id_for_history)
 
@@ -741,49 +821,61 @@ def webhook():
                 logging.info(f"Webhook: System is globally paused and {sender} is not in active_conversations_during_global_pause. Skipping.")
                 continue
 
-            # --- Greeting Detection and Initial Interactive Message (for text messages only) ---
-            if msg_type == 'text':
-                detected_language = None
-                # Check English greetings
-                if normalized_body in english_greetings:
-                    detected_language = 'en'
-                # Check Arabic greetings if not already detected as English
-                elif normalized_body in arabic_greetings:
-                    detected_language = 'ar'
+            user_id_for_history = ''.join(c for c in sender if c.isalnum())
+            history = load_history(user_id_for_history) # Load history earlier to check for new conversation
 
-                if detected_language:
-                    logging.info(f"Webhook: Detected greeting '{normalized_body}' from {sender} in {detected_language}. Preparing initial_greeting_message_components.")
-                    message_data_to_send = prepare_interactive_message_data(initial_greeting_message_components, detected_language)
-                    success = send_interactive_button_message(sender, message_data_to_send, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
+            # --- Issue #1: Always send initial interactive message for new conversations ---
+            if not history: # No prior history means it's a new conversation
+                logging.info(f"Webhook: New conversation detected for {sender}. Sending initial greeting.")
+                # Determine language from the first message if possible, else default
+                detected_language = 'ar' # Default language
+                if msg_type == 'text' and body_for_fallback:
+                    detected_language = detect_language_from_text(body_for_fallback)
+                elif msg_type == 'interactive': # If first message is somehow interactive (e.g. referral click)
+                    # This part might need refinement if such a scenario is common
+                    interactive_title_for_lang_detect = ""
+                    if message.get('interactive', {}).get('type') == 'button_reply':
+                        interactive_title_for_lang_detect = message.get('interactive', {}).get('button_reply', {}).get('title', '')
+                    elif message.get('interactive', {}).get('type') == 'list_reply':
+                        interactive_title_for_lang_detect = message.get('interactive', {}).get('list_reply', {}).get('title', '')
+                    if interactive_title_for_lang_detect:
+                         detected_language = detect_language_from_text(interactive_title_for_lang_detect)
 
-                    ai_action_content = ""
-                    if success:
-                        users_in_interactive_flow.add(sender)
-                        logging.info(f"Webhook: Successfully sent initial_greeting_message_components to {sender} in {detected_language}.")
-                        ai_action_content = "[Sent initial_greeting_message_components]"
-                    else:
-                        logging.error(f"Webhook: Failed to send initial_greeting_message_components to {sender} in {detected_language}. Sending text fallback.")
-                        fallback_text = "عذراً، حدث خطأ ما. الرجاء المحاولة مرة أخرى لاحقاً." if detected_language == 'ar' else "Sorry, something went wrong. Please try again later."
-                        send_whatsapp_message(sender, fallback_text, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
-                        ai_action_content = f"[Failed to send initial_greeting_message_components, sent text fallback: {fallback_text}]"
-                        users_in_interactive_flow.discard(sender)
+                logging.info(f"Webhook: Language for new conversation with {sender} detected as '{detected_language}'.")
 
-                    user_id_for_history = ''.join(c for c in sender if c.isalnum())
-                    history = load_history(user_id_for_history)
+                message_data_to_send = prepare_interactive_message_data(initial_greeting_message_components, detected_language)
+                success = send_interactive_button_message(sender, message_data_to_send, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
+
+                ai_action_content = ""
+                if success:
+                    users_in_interactive_flow.add(sender)
+                    logging.info(f"Webhook: Successfully sent initial_greeting_message_components to new user {sender} in {detected_language}.")
+                    ai_action_content = f"[Sent initial_greeting_message_components in {detected_language}]"
+                else:
+                    logging.error(f"Webhook: Failed to send initial_greeting_message_components to new user {sender} in {detected_language}. Sending text fallback.")
+                    fallback_text = "عذراً، حدث خطأ ما. الرجاء المحاولة مرة أخرى لاحقاً." if detected_language == 'ar' else "Sorry, something went wrong. Please try again later."
+                    send_whatsapp_message(sender, fallback_text, APP_CONFIG["API_URL"], APP_CONFIG["API_TOKEN"])
+                    ai_action_content = f"[Failed to send initial_greeting_message_components, sent text fallback: {fallback_text}]"
+                    users_in_interactive_flow.discard(sender) # Ensure they are not stuck in flow if initial message failed
+
+                # Save this interaction to history
+                if body_for_fallback: # body_for_fallback is the user's first message
                     history.append(HumanMessage(content=body_for_fallback))
-                    history.append(AIMessage(content=ai_action_content))
-                    if len(history) > MAX_HISTORY_TURNS_TO_LOAD * 2:
-                        history = history[-(MAX_HISTORY_TURNS_TO_LOAD * 2):]
-                    save_history(user_id_for_history, history)
-                    continue # Skip LLM call for this turn
+                else: # Should not happen if sender and body_for_fallback check passed, but as a safeguard
+                    history.append(HumanMessage(content="[User initiated conversation with a non-text/non-interactive message]"))
+                history.append(AIMessage(content=ai_action_content))
+                # History length check and save will happen at the end of the loop or after LLM response
+                # For now, just save it to avoid losing this first interaction if user doesn't reply further
+                save_history(user_id_for_history, history)
+                continue # Skip LLM call for this turn, as the initial greeting was sent.
 
-            # --- LLM Processing (if not handled by greeting or other flows, or if user in flow sends text) ---
+            # --- LLM Processing (if not a new conversation or if user in flow sends text) ---
+            # The existing greeting detection logic is now removed as the above block handles all first messages.
             if msg_type == 'text' and sender in users_in_interactive_flow:
                 logging.info(f"Webhook: User {sender} is in interactive flow but sent a text message. Processing with LLM.")
+            # Note: history is already loaded above.
 
-            user_id = ''.join(c for c in sender if c.isalnum())
-            history = load_history(user_id)
-            llm_response_data = get_llm_response(body_for_fallback, sender, history)
+            llm_response_data = get_llm_response(body_for_fallback, sender, history) # Pass the already loaded history
 
             final_model_response_for_history = ""
             if llm_response_data.get('type') == 'gallery':
