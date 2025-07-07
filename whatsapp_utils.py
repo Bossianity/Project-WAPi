@@ -64,32 +64,31 @@ def send_whatsapp_message(to, text):
     return response and response.get('sent')
 
 def send_whatsapp_image_message(to, caption, image_url):
-    """Downloads an image from a URL and sends it via the Whapi.Cloud API."""
-    try:
-        image_response = requests.get(image_url, stream=True, timeout=20)
-        image_response.raise_for_status()
-        content_type = image_response.headers.get('Content-Type', 'image/jpeg')
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
-            tmp_file.write(image_response.content)
-            tmp_file_path = tmp_file.name
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to download image from URL {image_url}: {e}")
+    """Sends an image using a URL directly via the Whapi.Cloud API."""
+    if not image_url or not image_url.startswith('http'):
+        logging.error(f"Invalid image_url provided for send_whatsapp_image_message: {image_url}")
         return False
 
     endpoint = 'messages/image'
     payload = {
         'to': to,
         'caption': caption,
-        'media': (tmp_file_path, content_type)
+        'media': image_url, # Send the URL directly
+        'view_once': False # Optional: as per user example
     }
 
-    try:
-        response = send_whapi_request(endpoint, payload, is_media=True)
-    finally:
-        os.remove(tmp_file_path)
+    logging.info(f"Attempting to send image by URL directly. Endpoint: {endpoint}, Payload: {json.dumps(payload)}")
 
-    return response and response.get('sent')
+    # Call send_whapi_request with is_media=False (or rely on its default for JSON)
+    # send_whapi_request handles setting 'Content-Type': 'application/json' when not is_media
+    response = send_whapi_request(endpoint, params=payload, method='POST', is_media=False)
+
+    if response and response.get('sent'):
+        logging.info(f"Successfully sent image by URL to {to}. Image URL: {image_url}")
+        return True
+    else:
+        logging.error(f"Failed to send image by URL to {to}. Image URL: {image_url}. Response: {response}")
+        return False
 
 def set_webhook():
     """Sets the bot's webhook URL with Whapi.Cloud on startup."""
