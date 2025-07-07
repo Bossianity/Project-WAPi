@@ -426,13 +426,20 @@ def _handle_show_photos(sender, prop_details, current_language):
     for i in range(1, 11):
         img_col = f'ImageURL{i}'
         url_val = prop_details.get(img_col)
+
+        # Attempt to get the specific caption for the image
         caption_col = f'ImageCaption{i}'
         caption_val = prop_details.get(caption_col)
+
+        # If the specific caption is missing, empty, or consists only of whitespace, use the default
         if not caption_val or str(caption_val).strip() == "":
-             caption_val = f"{prop_name} - Image {i}" if current_language == 'en' else f"{prop_name} - صورة {i}"
+            caption_val = f"{prop_name} - Image {i}" if current_language == 'en' else f"{prop_name} - صورة {i}"
+        else:
+            # Use the caption from the sheet, ensuring it's a string
+            caption_val = str(caption_val).strip()
 
         if url_val and isinstance(url_val, str) and url_val.startswith('http'):
-            image_urls.append({'url': url_val, 'caption': str(caption_val)})
+            image_urls.append({'url': url_val, 'caption': caption_val})
 
     if not image_urls:
         msg = f"No images are currently available for {prop_name}."
