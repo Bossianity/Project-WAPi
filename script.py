@@ -35,6 +35,8 @@ from google_drive_handler import (
     get_google_doc_content,
     get_google_sheet_content
 )
+# Import the new function for Sheet2
+from property_handler import get_sheet2_data
 from outreach_handler import process_outreach_campaign
 # send_interactive_list_message is added to this import
 from whatsapp_utils import (
@@ -1160,69 +1162,249 @@ def handle_new_messages():
                         if current_language == 'ar':
                             response_text = "الرجاء كتابة سؤالك، وسأبذل قصارى جهدي لمساعدتك."
                         send_whatsapp_message(sender, response_text)
-                        del interactive_flow_states[sender]
-                        # Let it fall through to RAG/LLM by not returning explicitly.
-                        # body_for_fallback will be the button title "Other inquiries", which might not be ideal for RAG.
-                        # Consider setting body_for_fallback to a more neutral "User asked for other inquiries" or None.
-                        # For now, let's clear it so RAG doesn't act on the button title.
+                        if sender in interactive_flow_states: # Check before deleting
+                            del interactive_flow_states[sender]
                         body_for_fallback = "User selected 'Other inquiries' and will type their question."
-                        # This will then be processed by the RAG after this interactive block.
-                    else:
+                    else: # Unknown button from initial greeting
                         response_text = "Sorry, I didn't understand that selection. Please try again."
                         if current_language == 'ar':
                             response_text = "عذراً، لم أفهم هذا الاختيار. الرجاء المحاولة مرة أخرى."
                         send_whatsapp_message(sender, response_text)
-                        # Optionally, resend initial greeting or just wait for next input
-                        # send_initial_greeting_message(sender, language=current_language)
+                        send_initial_greeting_message(sender, language=current_language) # Resend initial greeting
+                        interactive_flow_states[sender]['step'] = 'awaiting_initial_choice' # Reset step
                         return jsonify(status='success_interactive_reprompted_unknown_button'), 200
 
                 elif current_step == 'awaiting_furnished_choice':
-                    # This block handles the response to the "Is your apartment furnished?" question.
                     if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply':
-                        # Ensure button_id and selected_title are fresh for this specific step handling
                         button_id = message['reply']['buttons_reply'].get('id')
-                        button_title = message['reply']['buttons_reply'].get('title') # For logging or fallback
+                        button_title = message['reply']['buttons_reply'].get('title')
                         logging.info(f"Interactive flow: User {sender} at step {current_step} pressed button {button_id} ('{button_title}')")
 
                         if button_id == 'button_id4' or button_id.endswith(':button_id4'): # "Yes, furnished"
                             send_furnished_apartment_survey_message(sender, language=current_language)
-                            if sender in interactive_flow_states: # Check before deleting
-                                del interactive_flow_states[sender]
-                            logging.info(f"Interactive flow for {sender} (furnished branch) concluded by sending survey link.")
+                            if sender in interactive_flow_states: del interactive_flow_states[sender]
                             return jsonify(status='success_interactive_handled_survey_sent'), 200
                         elif button_id == 'button_id5' or button_id.endswith(':button_id5'): # "No, unfurnished"
                             send_unfurnished_apartment_survey_message(sender, language=current_language)
-                            if sender in interactive_flow_states: # Check before deleting
-                                del interactive_flow_states[sender]
-                            logging.info(f"Interactive flow for {sender} (unfurnished branch) concluded by sending survey link.")
+                            if sender in interactive_flow_states: del interactive_flow_states[sender]
                             return jsonify(status='success_interactive_handled_survey_sent'), 200
-                        else:
-                            # This 'else' handles an unexpected button_id for the 'awaiting_furnished_choice' step.
+                        else: # Unknown button for furnished choice
                             logging.warning(f"Interactive flow: User {sender} at step {current_step} pressed an unknown button ID: {button_id}")
                             response_text = "Sorry, I didn't understand that selection. Please choose one of the provided options."
-                            if current_language == 'ar':
-                                response_text = "عذراً، لم أفهم هذا الاختيار. الرجاء اختيار أحد الخيارات المتاحة."
+                            if current_language == 'ar': response_text = "عذراً، لم أفهم هذا الاختيار. الرجاء اختيار أحد الخيارات المتاحة."
                             send_whatsapp_message(sender, response_text)
-                            # Optionally resend the furnished_query_message to show the correct buttons again
-                            send_furnished_query_message(sender, language=current_language)
+                            send_furnished_query_message(sender, language=current_language) # Resend furnished query
                             return jsonify(status='success_interactive_reprompted_unknown_option'), 200
-                    else: # User sent something other than a button reply at this step (e.g., text)
+                    else: # Non-button reply for furnished choice
                         logging.info(f"Interactive flow: User {sender} at step {current_step} sent a non-button reply. Reprompting.")
                         response_text = "Please make a selection using the buttons provided for whether the apartment is furnished or not."
-                        if current_language == 'ar':
-                            response_text = "الرجاء تحديد اختيارك باستخدام الأزرار المتوفرة لتحديد ما إذا كانت الشقة مؤثثة أم لا."
+                        if current_language == 'ar': response_text = "الرجاء تحديد اختيارك باستخدام الأزرار المتوفرة لتحديد ما إذا كانت الشقة مؤثثة أم لا."
                         send_whatsapp_message(sender, response_text)
-                        # Resend the furnished_query_message to show the buttons again
-                        send_furnished_query_message(sender, language=current_language)
+                        send_furnished_query_message(sender, language=current_language) # Resend furnished query
                         return jsonify(status='success_interactive_reprompted_text_instead_of_button'), 200
 
-                elif current_step == 'awaiting_city_choice' and selected_row_id:
-                    response_text = f"You selected {selected_title}. Our team will contact you about rentals in this city."
+                elif current_step == 'awaiting_city_choice' and selected_row_id and selected_title:
+                    logging.info(f"User {sender} selected city: {selected_title} (ID: {selected_row_id})")
+
+                    # Fetch properties from Sheet2
+                    properties_df = get_sheet2_data()
+
+                    if properties_df.empty:
+                        logging.error(f"Failed to load properties from Sheet2 for city selection by {sender}.")
+                        response_text = "Sorry, I couldn't retrieve property information at the moment. Please try again later."
+                        if current_language == 'ar':
+                            response_text = "عذراً، لم أتمكن من استرداد معلومات العقارات في الوقت الحالي. الرجاء المحاولة مرة أخرى لاحقاً."
+                        send_whatsapp_message(sender, response_text)
+                        if sender in interactive_flow_states: del interactive_flow_states[sender]
+                        return jsonify(status='error_fetching_sheet2_data'), 200
+
+                    # Filter properties by the selected city (selected_title should be the city name)
+                    # Assuming 'City' column in Sheet2 stores city names matching selected_title
+                    city_properties = properties_df[properties_df['City'].str.lower() == selected_title.lower()]
+
+                    if city_properties.empty:
+                        response_text = f"Sorry, I couldn't find any properties listed in {selected_title} at the moment."
+                        if current_language == 'ar':
+                            response_text = f"عذراً، لم أجد أي عقارات مدرجة في {selected_title} في الوقت الحالي."
+                        send_whatsapp_message(sender, response_text)
+                        # Keep user in city selection step or end flow? For now, end.
+                        if sender in interactive_flow_states: del interactive_flow_states[sender]
+                        return jsonify(status='success_no_properties_in_city'), 200
+
+                    # Send a message indicating properties are being sent
+                    num_props = len(city_properties)
+                    found_message = f"Great! Found {num_props} propert{'y' if num_props == 1 else 'ies'} in {selected_title}. Sending them to you now..."
                     if current_language == 'ar':
-                        response_text = f"لقد اخترت {selected_title}. سيقوم فريقنا بالتواصل معك بخصوص الإيجارات في هذه المدينة."
-                    send_whatsapp_message(sender, response_text)
-                    del interactive_flow_states[sender]
-                    return jsonify(status='success_interactive_handled'), 200
+                        found_message = f"ممتاز! وجدت {num_props} {'عقار' if num_props == 1 else 'عقارات'} في {selected_title}. جاري إرسالها إليك الآن..."
+                    send_whatsapp_message(sender, found_message)
+                    time.sleep(1) # Small delay
+
+                    for index, prop in city_properties.iterrows():
+                        prop_id = str(prop['PropertyID']).strip()
+                        prop_name = str(prop['PropertyName']).strip()
+                        prop_desc = str(prop['Description']).strip()
+
+                        if not prop_id or not prop_name:
+                            logging.warning(f"Skipping property due to missing ID or Name. ID: '{prop_id}', Name: '{prop_name}'")
+                            continue
+
+                        buttons = [
+                            {"type": "quick_reply", "title": "عرض الصور" if current_language == 'ar' else "Show Photos", "id": f"show_photos_{prop_id}"},
+                            {"type": "quick_reply", "title": "الأسعار" if current_language == 'ar' else "Prices", "id": f"show_prices_{prop_id}"},
+                            {"type": "quick_reply", "title": "إحجز" if current_language == 'ar' else "Book", "id": f"book_prop_{prop_id}"}
+                        ]
+
+                        property_message_data = {
+                            'header': {'text': prop_name},
+                            'body': {'text': prop_desc if prop_desc else (prop_name if current_language == 'ar' else "Property details")}, # Fallback for body
+                            'footer': {'text': "إضغط للإختيار" if current_language == 'ar' else "Click to choose"},
+                            'action': {'buttons': buttons},
+                            'type': 'button', # This should be set by send_interactive_button_message
+                            'to': sender   # This should be set by send_interactive_button_message
+                        }
+
+                        # Use whatsapp_utils.send_interactive_button_message
+                        # The function expects a slightly different structure for message_data
+                        # It internally constructs the full payload.
+
+                        formatted_message_for_util = {
+                            'header': prop_name, # Direct text for header
+                            'body': prop_desc if prop_desc else (prop_name if current_language == 'ar' else "Property details"),
+                            'footer': "إضغط للإختيار" if current_language == 'ar' else "Click to choose",
+                            'buttons': buttons # List of button dicts
+                        }
+
+                        logging.info(f"Sending property card for {prop_name} (ID: {prop_id}) to {sender}")
+                        send_interactive_button_message(sender, formatted_message_for_util)
+                        time.sleep(random.uniform(1.5, 2.5)) # Delay between property messages
+
+                    # Update flow state to await property action
+                    interactive_flow_states[sender]['step'] = f'awaiting_property_action_{selected_title.lower().replace(" ", "_")}'
+                    # Store presented property IDs for context if needed later, e.g.
+                    # interactive_flow_states[sender]['presented_properties'] = city_properties['PropertyID'].tolist()
+
+                    # Send a follow-up message after sending all property cards
+                    follow_up_text = "Please choose an option from any of the properties listed above."
+                    if current_language == 'ar':
+                        follow_up_text = "الرجاء اختيار أحد الخيارات من أي من العقارات المذكورة أعلاه."
+                    send_whatsapp_message(sender, follow_up_text)
+
+                    return jsonify(status='success_sent_property_cards'), 200
+
+                # --- HANDLERS FOR PROPERTY ACTION BUTTONS ---
+                elif current_step and current_step.startswith('awaiting_property_action_') and button_id:
+                    logging.info(f"User {sender} in step {current_step} pressed button: {button_id}")
+
+                    # Extract action and property_id from button_id
+                    action_parts = button_id.split('_')
+                    action_type = action_parts[0] # e.g., "show"
+                    action_subject = action_parts[1] # e.g., "photos"
+                    prop_id_from_button = "_".join(action_parts[2:]) # Handles PropertyIDs that might contain underscores
+
+                    if not prop_id_from_button:
+                        logging.warning(f"Could not parse PropertyID from button_id: {button_id}")
+                        send_whatsapp_message(sender, "Sorry, there was an error processing your request. Please try again.")
+                        return jsonify(status='error_parsing_prop_id'), 200
+
+                    # Fetch all properties from Sheet2 again to get details for the selected property
+                    # In a more optimized scenario, we might cache this if the list is very large and frequently accessed
+                    properties_df = get_sheet2_data()
+                    if properties_df.empty:
+                        logging.error(f"Failed to load Sheet2 data for property action: {button_id} by {sender}")
+                        send_whatsapp_message(sender, "Sorry, I couldn't retrieve property details right now.")
+                        return jsonify(status='error_fetching_sheet2_for_action'), 200
+
+                    selected_property = properties_df[properties_df['PropertyID'] == prop_id_from_button]
+
+                    if selected_property.empty:
+                        logging.warning(f"Property with ID '{prop_id_from_button}' not found in Sheet2 for action: {button_id}")
+                        send_whatsapp_message(sender, "Sorry, I couldn't find details for that specific property. It might have been removed.")
+                        return jsonify(status='error_prop_not_found_for_action'), 200
+
+                    prop_details = selected_property.iloc[0]
+                    prop_name = prop_details.get('PropertyName', 'this property')
+
+                    if action_type == "show" and action_subject == "photos":
+                        logging.info(f"Handling 'show_photos' for PropertyID: {prop_id_from_button} for user {sender}")
+                        image_urls = []
+                        for i in range(1, 11): # ImageURL1 to ImageURL10
+                            img_col = f'ImageURL{i}'
+                            if img_col in prop_details and prop_details[img_col] and isinstance(prop_details[img_col], str) and prop_details[img_col].startswith('http'):
+                                image_urls.append(prop_details[img_col])
+
+                        if not image_urls:
+                            msg = f"No images are currently available for {prop_name}."
+                            if current_language == 'ar': msg = f"لا توجد صور متاحة حالياً لـ {prop_name}."
+                            send_whatsapp_message(sender, msg)
+                        else:
+                            msg = f"Sending {len(image_urls)} image(s) for {prop_name}..."
+                            if current_language == 'ar': msg = f"جاري إرسال {len(image_urls)} صورة/صور لـ {prop_name}..."
+                            send_whatsapp_message(sender, msg)
+                            time.sleep(0.5)
+                            for img_url in image_urls:
+                                caption = f"{prop_name} - Image"
+                                if current_language == 'ar': caption = f"{prop_name} - صورة"
+                                send_whatsapp_image_message(sender, caption, img_url)
+                                time.sleep(random.uniform(1.0, 2.0)) # Delay between images
+
+                        # After sending photos, what next? Re-prompt or end?
+                        # For now, just send a confirmation. User can click another button.
+                        # You might want to resend the property card or a menu.
+                        follow_up_text = f"What else would you like to know about {prop_name}?"
+                        if current_language == 'ar': follow_up_text = f"ماذا تريد أن تعرف أيضاً عن {prop_name}؟"
+                        # To resend the card: (Requires careful payload reconstruction)
+                        # original_buttons = [...]
+                        # send_interactive_button_message(sender, {'header': prop_name, 'body': prop_details.get('Description'), ...})
+                        send_whatsapp_message(sender, follow_up_text)
+                        return jsonify(status='success_sent_photos'), 200
+
+                    elif action_type == "show" and action_subject == "prices":
+                        logging.info(f"Handling 'show_prices' for PropertyID: {prop_id_from_button} for user {sender}")
+                        weekday_price = prop_details.get('WeekdayPrice', 'N/A')
+                        weekend_price = prop_details.get('WeekendPrice', 'N/A')
+                        monthly_price = prop_details.get('MonthlyPrice', 'N/A')
+
+                        price_text = ""
+                        if current_language == 'ar':
+                            price_text = f"أسعار {prop_name}:\n" \
+                                         f"- سعر الليلة (أيام الأسبوع): {weekday_price} ريال\n" \
+                                         f"- سعر الليلة (عطلة نهاية الأسبوع): {weekend_price} ريال\n" \
+                                         f"- السعر الشهري: {monthly_price} ريال"
+                        else:
+                            price_text = f"Prices for {prop_name}:\n" \
+                                         f"- Weekday Night: {weekday_price} SAR\n" \
+                                         f"- Weekend Night: {weekend_price} SAR\n" \
+                                         f"- Monthly Price: {monthly_price} SAR"
+                        send_whatsapp_message(sender, price_text)
+                        return jsonify(status='success_sent_prices'), 200
+
+                    elif action_type == "book" and action_subject == "prop": # from book_prop_{id}
+                        logging.info(f"Handling 'book_prop' for PropertyID: {prop_id_from_button} for user {sender}")
+                        booking_link = prop_details.get('BookingLink')
+
+                        response_text = ""
+                        if booking_link and isinstance(booking_link, str) and booking_link.startswith('http'):
+                            if current_language == 'ar':
+                                response_text = f"لحجز {prop_name}, يمكنك استخدام الرابط التالي: {booking_link}\n\nأو يمكن لفريقنا مساعدتك في إتمام الحجز. هل تود المتابعة مع أحد أفراد فريقنا؟"
+                                # Optionally, send buttons "Yes, contact me" / "No, I'll use link"
+                            else:
+                                response_text = f"To book {prop_name}, you can use the following link: {booking_link}\n\nAlternatively, our team can assist you. Would you like us to contact you?"
+                        else:
+                            if current_language == 'ar':
+                                response_text = f"شكراً لاهتمامك بـ {prop_name}. سيقوم أحد أعضاء فريقنا بالتواصل معك قريباً لترتيب الحجز."
+                            else:
+                                response_text = f"Thank you for your interest in {prop_name}. A member of our team will contact you shortly to arrange the booking."
+
+                        send_whatsapp_message(sender, response_text)
+                        # Potentially clear flow or move to a 'booking_requested' state
+                        if sender in interactive_flow_states: del interactive_flow_states[sender]
+                        return jsonify(status='success_handled_booking_action'), 200
+
+                    else:
+                        logging.warning(f"Unknown action for property button: {button_id}")
+                        send_whatsapp_message(sender, "Sorry, I didn't understand that option for the property.")
+                        return jsonify(status='error_unknown_property_action'), 200
+
 
                 # Handle text messages during an active interactive flow
                 elif msg_type == 'text' and body_text_if_any:
