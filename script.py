@@ -1296,13 +1296,26 @@ def handle_new_messages():
                 elif current_step and current_step.startswith('awaiting_property_action_') and button_id:
                     logging.info(f"User {sender} in step {current_step} pressed button: {button_id}")
 
-                    # Extract action and property_id from button_id
-                    action_parts = button_id.split('_')
-                    action_type = action_parts[0] # e.g., "show"
-                    action_subject = action_parts[1] # e.g., "photos"
-                    prop_id_from_button = "_".join(action_parts[2:]) # Handles PropertyIDs that might contain underscores
+                    # Clean the button_id by removing potential prefixes
+                    cleaned_button_id = button_id
+                    if button_id.startswith("ButtonsV3:"):
+                        cleaned_button_id = button_id.replace("ButtonsV3:", "")
+                        logging.info(f"Cleaned button_id from '{button_id}' to '{cleaned_button_id}'")
 
-                    if not prop_id_from_button:
+                    # Extract action and property_id from cleaned_button_id
+                    action_parts = cleaned_button_id.split('_')
+                    action_type = ""
+                    action_subject = ""
+                    prop_id_from_button = ""
+
+                    if len(action_parts) >= 3:
+                        action_type = action_parts[0]      # e.g., "show"
+                        action_subject = action_parts[1]   # e.g., "photos"
+                        prop_id_from_button = "_".join(action_parts[2:]) # Handles PropertyIDs that might contain underscores
+                    else:
+                        logging.warning(f"Could not parse action and property ID from cleaned_button_id: {cleaned_button_id}. Parts: {action_parts}")
+
+                    if not prop_id_from_button: # Check if prop_id_from_button was successfully extracted
                         logging.warning(f"Could not parse PropertyID from button_id: {button_id}")
                         send_whatsapp_message(sender, "Sorry, there was an error processing your request. Please try again.")
                         return jsonify(status='error_parsing_prop_id'), 200
