@@ -426,14 +426,13 @@ def _handle_show_photos(sender, prop_details, current_language):
     for i in range(1, 11):
         img_col = f'ImageURL{i}'
         url_val = prop_details.get(img_col)
-        caption_col = f'ImageCaption{i}' # Prepare for custom captions
-        caption_val = prop_details.get(caption_col, f"{prop_name} - Image {i}" if current_language == 'en' else f"{prop_name} - صورة {i}")
-        if not caption_val or str(caption_val).strip() == "": # Fallback if caption is empty
+        caption_col = f'ImageCaption{i}'
+        caption_val = prop_details.get(caption_col)
+        if not caption_val or str(caption_val).strip() == "":
              caption_val = f"{prop_name} - Image {i}" if current_language == 'en' else f"{prop_name} - صورة {i}"
 
-
         if url_val and isinstance(url_val, str) and url_val.startswith('http'):
-            image_urls.append({'url': url_val, 'caption': caption_val}) # Store as dict
+            image_urls.append({'url': url_val, 'caption': str(caption_val)})
 
     if not image_urls:
         msg = f"No images are currently available for {prop_name}."
@@ -444,7 +443,7 @@ def _handle_show_photos(sender, prop_details, current_language):
         if current_language == 'ar': msg = f"جاري إرسال {len(image_urls)} صورة/صور لـ {prop_name}..."
         send_whatsapp_message(sender, msg)
         time.sleep(0.5)
-        for img_data in image_urls: # Iterate through dicts
+        for img_data in image_urls:
             send_whatsapp_image_message(sender, img_data['caption'], img_data['url'])
             time.sleep(random.uniform(1.0, 2.0))
 
@@ -482,20 +481,16 @@ def _handle_book_property(sender, prop_details, current_language):
     send_whatsapp_message(sender, response_text)
     if sender in interactive_flow_states:
         old_state = interactive_flow_states[sender].copy()
-        # Retain last_interacted_prop_id for potential immediate follow-up if desired, or clear fully.
-        # For now, clearing the step should be enough to exit this specific sub-flow.
-        # If we want them to ask more about THIS property after booking info, we'd keep last_interacted_prop_id
-        # and perhaps change step to something like 'post_booking_info_query'.
-        # For simplicity, we assume this action might end the detailed interaction with this property.
         if 'last_interacted_prop_id' in interactive_flow_states[sender]:
-             del interactive_flow_states[sender]['last_interacted_prop_id'] # Clean up specific state
+             del interactive_flow_states[sender]['last_interacted_prop_id']
         if interactive_flow_states[sender].get('step', '').startswith('awaiting_property_action_'):
-            del interactive_flow_states[sender] # Remove from flow if this was the end
+            del interactive_flow_states[sender]
         logging.info(f"Potentially cleared/modified interactive_flow_state for {sender} after booking action. Old state was: {old_state}")
 
 
 @app.route('/hook', methods=['POST'])
 def handle_new_messages():
+    global is_globally_paused, paused_conversations # Ensure global declaration
     try:
         data = request.json or {}
         incoming_messages = data.get('messages', [])
@@ -532,72 +527,96 @@ def handle_new_messages():
                     elif reply_content.get('type') == 'list_reply':
                         selected_row_id = reply_content['list_reply'].get('id'); selected_title = reply_content['list_reply'].get('title')
 
-                body_for_fallback = selected_title # Default for reply types
+                # body_for_fallback is set here if it's a reply, or later if it's text.
+                # This needs to be distinct from body_text_if_any used for keyword matching.
+                # Let's ensure body_for_fallback is primarily for RAG, and body_text_if_any for direct text content.
+                # If it's a button reply, body_text_if_any will be its title.
 
                 # PRIORITY: Handle text messages when awaiting property action
                 if current_step and current_step.startswith('awaiting_property_action_') and msg_type == 'text' and body_text_if_any:
-                    logging.info(f"User {sender} in step {current_step} sent text: '{body_text_if_any}'")
+                    logging.info(f"User {sender} in step {current_step} (awaiting_property_action) sent text: '{body_text_if_any}'")
                     last_prop_id = interactive_flow_states[sender].get('last_interacted_prop_id')
                     action_triggered = False
                     if last_prop_id:
-                        text_lower = body_text_if_any.lower()
-                        photo_keywords_ar = ["صور", "صوره", "الصور"]; photo_keywords_en = ["photo", "photos", "pics", "pictures", "images"]
-                        price_keywords_ar = ["سعر", "اسعار", "الاسعار", "بكم"]; price_keywords_en = ["price", "prices", "cost", "how much"]
-                        book_keywords_ar = ["حجز", "احجز", "الحجز"]; book_keywords_en = ["book", "booking", "reserve"]
+                        text_lower = body_text_if_any.strip().lower() # Use strip() here
+
+                        photo_keywords_ar = ["صور", "صوره", "الصور"]
+                        photo_keywords_en = ["photo", "photos", "pics", "pictures", "images"]
+                        price_keywords_ar = ["سعر", "اسعار", "الاسعار", "بكم", "الأسعار"] # Added "الأسعار"
+                        price_keywords_en = ["price", "prices", "cost", "how much"]
+                        book_keywords_ar = ["حجز", "احجز", "الحجز"]
+                        book_keywords_en = ["book", "booking", "reserve"]
+
+                        # Exact match first, then substring
+                        exact_match_ar_photo = text_lower in photo_keywords_ar
+                        exact_match_en_photo = text_lower in photo_keywords_en
+                        substring_match_ar_photo = any(kw in text_lower for kw in photo_keywords_ar)
+                        substring_match_en_photo = any(kw in text_lower for kw in photo_keywords_en)
+
+                        exact_match_ar_price = text_lower in price_keywords_ar
+                        exact_match_en_price = text_lower in price_keywords_en
+                        substring_match_ar_price = any(kw in text_lower for kw in price_keywords_ar)
+                        substring_match_en_price = any(kw in text_lower for kw in price_keywords_en)
+
+                        exact_match_ar_book = text_lower in book_keywords_ar
+                        exact_match_en_book = text_lower in book_keywords_en
+                        substring_match_ar_book = any(kw in text_lower for kw in book_keywords_ar)
+                        substring_match_en_book = any(kw in text_lower for kw in book_keywords_en)
 
                         properties_df = get_sheet2_data()
                         if not properties_df.empty:
                             selected_property = properties_df[properties_df['PropertyID'] == last_prop_id]
                             if not selected_property.empty:
                                 prop_details = selected_property.iloc[0]
-                                if any(kw in text_lower for kw in (photo_keywords_ar if current_language == 'ar' else photo_keywords_en)):
+                                if (current_language == 'ar' and (exact_match_ar_photo or substring_match_ar_photo)) or \
+                                   (current_language == 'en' and (exact_match_en_photo or substring_match_en_photo)):
+                                    logging.info(f"Text matches 'show photos' for prop {last_prop_id} by user {sender}. Matched on: '{text_lower}'")
                                     _handle_show_photos(sender, prop_details, current_language); action_triggered = True
-                                elif any(kw in text_lower for kw in (price_keywords_ar if current_language == 'ar' else price_keywords_en)):
+                                elif (current_language == 'ar' and (exact_match_ar_price or substring_match_ar_price)) or \
+                                     (current_language == 'en' and (exact_match_en_price or substring_match_en_price)):
+                                    logging.info(f"Text matches 'show prices' for prop {last_prop_id} by user {sender}. Matched on: '{text_lower}'")
                                     _handle_show_prices(sender, prop_details, current_language); action_triggered = True
-                                elif any(kw in text_lower for kw in (book_keywords_ar if current_language == 'ar' else book_keywords_en)):
+                                elif (current_language == 'ar' and (exact_match_ar_book or substring_match_ar_book)) or \
+                                     (current_language == 'en' and (exact_match_en_book or substring_match_en_book)):
+                                    logging.info(f"Text matches 'book property' for prop {last_prop_id} by user {sender}. Matched on: '{text_lower}'")
                                     _handle_book_property(sender, prop_details, current_language); action_triggered = True
                             else: logging.warning(f"Last interacted PropertyID '{last_prop_id}' not found for text action.")
                         else: logging.error(f"Failed to load Sheet2 data for text-based action by {sender} for prop {last_prop_id}.")
 
                     if action_triggered: return jsonify(status='success_text_action_handled'), 200
-                    else: # Text did not match a specific property action or no last_prop_id
-                        logging.info(f"Text '{body_text_if_any}' from user {sender} did not match property actions or no last_prop_id. Will fall through.")
-                        body_for_fallback = body_text_if_any # Ensure RAG gets it
-                        # This message will now fall out of the main "if user_in_interactive_flow" if no other condition below matches
+                    else:
+                        logging.info(f"Text '{body_text_if_any}' from user {sender} (in step {current_step}) did not match property keywords or no last_prop_id. Will fall through.")
+                        body_for_fallback = body_text_if_any
 
-                # Standard button/list reply handlers
                 elif current_step == 'awaiting_initial_choice' and button_id:
+                    # ... (logic as before)
                     if button_id == 'button_id1' or button_id.endswith(':button_id1'): send_furnished_query_message(sender, language=current_language); interactive_flow_states[sender]['step'] = 'awaiting_furnished_choice'; return jsonify(status='success_interactive_handled'), 200
                     elif button_id == 'button_id2' or button_id.endswith(':button_id2'): send_city_selection_message(sender, language=current_language); interactive_flow_states[sender]['step'] = 'awaiting_city_choice'; return jsonify(status='success_interactive_handled'), 200
                     elif button_id == 'button_id3' or button_id.endswith(':button_id3'):
                         send_whatsapp_message(sender, "الرجاء كتابة سؤالك، وسأبذل قصارى جهدي لمساعدتك." if current_language == 'ar' else "Please type your question.");
                         if sender in interactive_flow_states: del interactive_flow_states[sender]
-                        body_for_fallback = "User selected 'Other inquiries' and will type their question." # Fall to RAG
+                        body_for_fallback = "User selected 'Other inquiries' and will type their question."
                     else: send_initial_greeting_message(sender, language=current_language); interactive_flow_states[sender]['step'] = 'awaiting_initial_choice'; return jsonify(status='success_interactive_reprompted_unknown_button'), 200
 
-                elif current_step == 'awaiting_furnished_choice' and button_id : # Simplified from original as it only expects button
-                    if button_id == 'button_id4' or button_id.endswith(':button_id4'): send_furnished_apartment_survey_message(sender, language=current_language);
-                    elif button_id == 'button_id5' or button_id.endswith(':button_id5'): send_unfurnished_apartment_survey_message(sender, language=current_language);
-                    else: send_furnished_query_message(sender, language=current_language); return jsonify(status='success_interactive_reprompted_unknown_option'), 200
-                    if sender in interactive_flow_states: del interactive_flow_states[sender];
-                    return jsonify(status='success_interactive_handled_survey_sent'), 200
+                elif current_step == 'awaiting_furnished_choice': # This step primarily expects a button reply
+                    if button_id: # It's a button reply
+                        if button_id == 'button_id4' or button_id.endswith(':button_id4'): send_furnished_apartment_survey_message(sender, language=current_language);
+                        elif button_id == 'button_id5' or button_id.endswith(':button_id5'): send_unfurnished_apartment_survey_message(sender, language=current_language);
+                        else: send_furnished_query_message(sender, language=current_language); return jsonify(status='success_interactive_reprompted_unknown_option'), 200
+                        if sender in interactive_flow_states: del interactive_flow_states[sender];
+                        return jsonify(status='success_interactive_handled_survey_sent'), 200
+                    elif msg_type == 'text' and body_text_if_any: # User sent text instead
+                        send_whatsapp_message(sender, "الرجاء الاختيار من الأزرار." if current_language == 'ar' else "Please choose from the buttons.")
+                        send_furnished_query_message(sender, language=current_language) # Resend query
+                        return jsonify(status='success_interactive_reprompted_text_instead_of_button_for_furnished'), 200
 
                 elif current_step == 'awaiting_city_choice' and selected_row_id and selected_title:
-                    # ... (city selection logic as before, leading to property cards & setting step to awaiting_property_action_...)
-                    # This part is assumed correct from previous steps.
-                    # For brevity in this overwrite, I'll summarize:
+                    # ... (city selection logic as before) ...
                     logging.info(f"User {sender} selected city: {selected_title}")
                     properties_df = get_sheet2_data()
-                    if properties_df.empty: # Handle error
-                        send_whatsapp_message(sender, "عذراً، لم أتمكن من استرداد معلومات العقارات." if current_language == 'ar' else "Sorry, couldn't get property info.")
-                        if sender in interactive_flow_states: del interactive_flow_states[sender]
-                        return jsonify(status='error_fetching_sheet2_data'), 200
+                    if properties_df.empty: send_whatsapp_message(sender, "عذراً، لم أتمكن من استرداد معلومات العقارات." if current_language == 'ar' else "Sorry, couldn't get property info."); return jsonify(status='error_fetching_sheet2_data'), 200
                     city_properties = properties_df[properties_df['City'].str.lower() == selected_title.lower()]
-                    if city_properties.empty: # Handle no properties
-                        send_whatsapp_message(sender, f"عذراً، لا توجد عقارات في {selected_title}." if current_language == 'ar' else f"Sorry, no properties in {selected_title}.")
-                        if sender in interactive_flow_states: del interactive_flow_states[sender]
-                        return jsonify(status='success_no_properties_in_city'), 200
-
+                    if city_properties.empty: send_whatsapp_message(sender, f"عذراً، لا توجد عقارات في {selected_title}." if current_language == 'ar' else f"Sorry, no properties in {selected_title}."); return jsonify(status='success_no_properties_in_city'), 200
                     send_whatsapp_message(sender, f"ممتاز! وجدت {len(city_properties)} عقارات. جاري إرسالها..." if current_language == 'ar' else f"Great! Found {len(city_properties)} properties. Sending now...")
                     time.sleep(1)
                     for _, prop in city_properties.iterrows():
@@ -611,91 +630,86 @@ def handle_new_messages():
                     return jsonify(status='success_sent_property_cards'), 200
 
                 elif current_step and current_step.startswith('awaiting_property_action_') and button_id: # Button clicks for property
+                    # ... (property action button logic as before, calling helper functions and returning) ...
                     cleaned_button_id = button_id.replace("ButtonsV3:", "") if button_id.startswith("ButtonsV3:") else button_id
                     action_parts = cleaned_button_id.split('_'); action_type = ""; action_subject = ""; prop_id_from_button = ""
                     if len(action_parts) >= 3: action_type, action_subject, *prop_id_parts = action_parts; prop_id_from_button = "_".join(prop_id_parts)
-
-                    if not prop_id_from_button: # Error handling for parsing
-                        send_whatsapp_message(sender, "Error processing selection."); return jsonify(status='error_parsing_prop_id'), 200
-
-                    properties_df = get_sheet2_data() # Fetch details
+                    if not prop_id_from_button: send_whatsapp_message(sender, "Error processing selection."); return jsonify(status='error_parsing_prop_id'), 200
+                    properties_df = get_sheet2_data()
                     if properties_df.empty: send_whatsapp_message(sender, "Error fetching details."); return jsonify(status='error_fetching_sheet2_for_action'), 200
                     selected_property = properties_df[properties_df['PropertyID'] == prop_id_from_button]
                     if selected_property.empty: send_whatsapp_message(sender, "Property details not found."); return jsonify(status='error_prop_not_found_for_action'), 200
-
                     prop_details = selected_property.iloc[0]
                     if sender in interactive_flow_states: interactive_flow_states[sender]['last_interacted_prop_id'] = prop_id_from_button
-
                     if action_type == "show" and action_subject == "photos": _handle_show_photos(sender, prop_details, current_language); return jsonify(status='success_called_show_photos'), 200
                     elif action_type == "show" and action_subject == "prices": _handle_show_prices(sender, prop_details, current_language); return jsonify(status='success_called_show_prices'), 200
                     elif action_type == "book" and action_subject == "prop": _handle_book_property(sender, prop_details, current_language); return jsonify(status='success_called_book_property'), 200
                     else: send_whatsapp_message(sender, "Sorry, unknown option."); return jsonify(status='error_unknown_property_action'), 200
 
-                # Generic text handler for other interactive flow steps (if not property action text)
-                elif msg_type == 'text' and body_text_if_any: # This now correctly doesn't catch property action texts that weren't keyword matched
+                # Generic text handler for OTHER interactive flow steps (if not property action text and not handled by specific step above)
+                elif msg_type == 'text' and body_text_if_any:
+                    # This condition is now only met if it's a text message AND
+                    # it was NOT a text message in 'awaiting_property_action_' step (that would have set body_for_fallback and fallen through)
+                    # AND it was not handled by any other step-specific text logic (e.g. awaiting_seller_name)
+                    logging.info(f"User {sender} in step {current_step} sent unhandled text: '{body_text_if_any}'. Reprompting.")
                     response_text = "Please make a selection using the buttons or list provided."
                     if current_language == 'ar': response_text = "الرجاء تحديد اختيارك باستخدام الأزرار أو القائمة المتوفرة."
                     send_whatsapp_message(sender, response_text)
-                    return jsonify(status='success_interactive_reprompted_text_instead_of_button'), 200
+                    # Optionally, resend the last interactive message specific to 'current_step' if known
+                    return jsonify(status='success_interactive_reprompted_unhandled_text'), 200
 
                 # Unhandled reply in interactive flow
                 elif msg_type == 'reply' and (button_id or selected_row_id):
                     logging.warning(f"User {sender} sent unhandled reply in step {current_step}. ButtonID: {button_id}, ListID: {selected_row_id}")
-                    send_initial_greeting_message(sender, language=current_language) # Reset
+                    send_initial_greeting_message(sender, language=current_language)
                     interactive_flow_states[sender] = {'step': 'awaiting_initial_choice', 'language': current_language}
-                    return jsonify(status='success_interactive_reset'), 200
-
-                # If it's a text message and we are in an interactive flow step NOT awaiting_property_action
-                # AND it wasn't handled by the above `elif msg_type == 'text' and body_text_if_any:` (which it wouldn't be if it's not `awaiting_property_action_`)
-                # this implies it might be an unhandled text in a specific step like 'awaiting_furnished_choice' if that step didn't explicitly handle text.
-                # However, most steps expecting button/list replies DO have an 'else' for text.
-                # The current logic for text in `awaiting_property_action_` correctly sets `body_for_fallback` if no keywords match.
-                # This means if `user_in_interactive_flow` is true, and no conditions above `return`, the message will fall through
-                # to the RAG logic if `body_for_fallback` was set (e.g., by the property action text handler or initial button choice "Other").
+                    return jsonify(status='success_interactive_reset_unhandled_reply'), 200
 
             # --- Fallback and RAG Logic (outside 'if user_in_interactive_flow') ---
-            if body_for_fallback is None: # If not set by interactive flow, get it now
+            # body_for_fallback would have been set if:
+            # 1. Initial button "Other Inquiries" was pressed.
+            # 2. Text was sent during 'awaiting_property_action_' but didn't match keywords.
+            # 3. Or, if it's a new message not part of any interactive flow.
+            if body_for_fallback is None:
                 if msg_type == 'text': body_for_fallback = message.get('text', {}).get('body', '').strip()
-                elif msg_type == 'reply' and not user_in_interactive_flow: # Unhandled reply outside of known flows
+                elif msg_type == 'reply' and not user_in_interactive_flow:
                     reply_data = message.get('reply', {})
                     body_for_fallback = reply_data.get('buttons_reply', {}).get('title') or reply_data.get('list_reply', {}).get('title') or ""
                 elif msg_type == 'image' or msg_type == 'video': body_for_fallback = f"[User sent {msg_type}]"
-                # ... (audio transcription logic as before) ...
+                elif msg_type == 'audio':
+                    media_url = message.get('media', {}).get('url')
+                    if media_url and openai_client:
+                        try: # Simplified audio transcription
+                            audio_response = requests.get(media_url); audio_response.raise_for_status()
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_audio_file: tmp_audio_file.write(audio_response.content); tmp_audio_file_path = tmp_audio_file.name
+                            transcript = openai_client.audio.transcriptions.create(model="whisper-1", file=open(tmp_audio_file_path, "rb"))
+                            body_for_fallback = transcript.text; os.remove(tmp_audio_file_path)
+                        except Exception as e: logging.error(f"Audio transcription error: {e}"); body_for_fallback = "[Audio transcription failed.]"
+                    else: body_for_fallback = "[Audio received, no transcription.]"
 
-            if not (sender and body_for_fallback): # If still no body, skip
-                logging.warning(f"Webhook ignored: no sender or body. Message: {message}")
+            if not (sender and body_for_fallback):
+                logging.warning(f"Webhook ignored: no sender or body_for_fallback. Message: {message}")
                 continue
 
-            # --- Sell Property Flow (checked after interactive flow and if not handled) ---
+            # --- Sell Property Flow (checked after interactive flow and if not handled by RAG initiation) ---
             if not user_in_interactive_flow and sender in sell_flow_states:
-                # ... (sell_flow_states logic as before - assumed correct and self-contained with 'continue')
-                # This part is complex and not being changed, so keeping it summarized
-                # Ensure it has `continue` or `return` at the end of its processing logic for a message.
-                # Example:
-                # if process_sell_flow(sender, message, msg_type, sell_flow_states): continue
-                # For this overwrite, the existing sell flow logic is maintained as is.
+                # ... (sell_flow_states logic as before)
+                # This should ideally be structured to not conflict with RAG if body_for_fallback is also set
+                # For now, assuming sell_flow takes precedence if its state is active.
                 state_info = sell_flow_states[sender]; current_sell_state = state_info.get('state'); user_data = state_info.get('data', {})
-                user_reply_text = body_text_if_any if msg_type == 'text' else selected_title # Simplified
-                if not user_reply_text and msg_type=='text': user_reply_text = message.get('text',{}).get('body','').strip() # Ensure it's set for text if it fell through
+                user_reply_text = body_text_if_any if msg_type == 'text' else selected_title
+                if not user_reply_text and msg_type=='text': user_reply_text = message.get('text',{}).get('body','').strip()
 
-                if current_sell_state == 'awaiting_seller_name':
-                    user_data['name'] = user_reply_text
-                    sell_flow_states[sender] = {'state': 'awaiting_seller_property_type', 'data': user_data}
-                    # ... send_interactive_list_message ...
+                if current_sell_state == 'awaiting_seller_name': # Example state
+                    user_data['name'] = user_reply_text; sell_flow_states[sender]['state'] = 'awaiting_seller_property_type'; # send next list/message
                     continue
-                # ... other sell flow states ...
-                elif current_sell_state == 'awaiting_seller_price':
-                    # ... final processing ...
-                    del sell_flow_states[sender]
-                    continue # Ensure sell flow processing ends here for the message
+                # ... other sell flow states, all should 'continue' ...
+                elif current_sell_state == 'awaiting_seller_price': # Final state example
+                    del sell_flow_states[sender]; continue
 
-            # --- Greeting check (if not in any flow and not handled as specific text action) ---
+            # --- Greeting check (if not in any flow and not a sell flow message) ---
             if not user_in_interactive_flow and not (sender in sell_flow_states) and body_for_fallback:
-                # ... (greeting check logic as before, leading to return if greeting)
-                current_text_for_greeting_check = body_text_if_any.strip().lower() # Use body_text_if_any for greeting
-                if not current_text_for_greeting_check and msg_type == 'text': # if body_text_if_any was from a button
-                    current_text_for_greeting_check = message.get('text', {}).get('body', '').strip().lower()
-
+                current_text_for_greeting_check = body_for_fallback.strip().lower() # Use body_for_fallback here
                 greetings = ["hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "مرحبا", "السلام عليكم", "هلا", "هاي"]
                 is_greeting = any(greet == current_text_for_greeting_check for greet in greetings if current_text_for_greeting_check) or \
                               any(current_text_for_greeting_check.startswith(greet) for greet in greetings if current_text_for_greeting_check and len(greet) > 2)
@@ -705,15 +719,12 @@ def handle_new_messages():
                     return jsonify(status='success_interactive_started'), 200
 
             # --- Command Processing & RAG/LLM Fallback ---
-            if not (sender and body_for_fallback): # Final check before RAG
-                logging.warning(f"Webhook: No sender or body_for_fallback before RAG. Message: {message}")
-                continue
+            if not (sender and body_for_fallback): continue # Redundant check, but safe
 
             normalized_body = body_for_fallback.lower().strip()
-            # ... (bot pause/resume, outreach commands as before) ...
             if normalized_body == "bot pause all": is_globally_paused = True; send_whatsapp_message(sender, "Bot globally paused."); continue
             if normalized_body == "bot resume all": is_globally_paused = False; paused_conversations.clear(); send_whatsapp_message(sender, "Bot globally resumed."); continue
-            # ... other commands
+            # ... other admin commands ...
 
             if is_globally_paused or sender in paused_conversations: continue
 
@@ -724,12 +735,15 @@ def handle_new_messages():
             # ... (LLM response sending logic as before) ...
             final_model_response_for_history = ""
             if llm_response_data['type'] == 'image':
-                # ... send image ...
                 final_model_response_for_history = f"[Sent Image: {llm_response_data['url']}]"
+                send_whatsapp_image_message(sender, llm_response_data['caption'], llm_response_data['url'])
             elif llm_response_data['type'] == 'text':
                 text_content = llm_response_data['content']
                 final_model_response_for_history = text_content
-                # ... send text chunks ...
+                chunks = split_message(text_content)
+                for idx, chunk in enumerate(chunks, start=1):
+                    send_whatsapp_message(sender, chunk)
+                    if idx < len(chunks): time.sleep(random.uniform(1.0, 2.0)) # Shorter delay
 
             new_history_user = {'role': 'user', 'parts': [body_for_fallback]}
             new_history_model = {'role': 'model', 'parts': [final_model_response_for_history]}
