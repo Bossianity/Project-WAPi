@@ -1207,7 +1207,6 @@ def handle_new_messages():
                 elif current_step == 'awaiting_city_choice' and selected_row_id and selected_title:
                     logging.info(f"User {sender} selected city: {selected_title} (ID: {selected_row_id})")
 
-                    # Fetch properties from Sheet2
                     properties_df = get_sheet2_data()
 
                     if properties_df.empty:
@@ -1219,8 +1218,6 @@ def handle_new_messages():
                         if sender in interactive_flow_states: del interactive_flow_states[sender]
                         return jsonify(status='error_fetching_sheet2_data'), 200
 
-                    # Filter properties by the selected city (selected_title should be the city name)
-                    # Assuming 'City' column in Sheet2 stores city names matching selected_title
                     city_properties = properties_df[properties_df['City'].str.lower() == selected_title.lower()]
 
                     if city_properties.empty:
@@ -1228,17 +1225,15 @@ def handle_new_messages():
                         if current_language == 'ar':
                             response_text = f"عذراً، لم أجد أي عقارات مدرجة في {selected_title} في الوقت الحالي."
                         send_whatsapp_message(sender, response_text)
-                        # Keep user in city selection step or end flow? For now, end.
                         if sender in interactive_flow_states: del interactive_flow_states[sender]
                         return jsonify(status='success_no_properties_in_city'), 200
 
-                    # Send a message indicating properties are being sent
                     num_props = len(city_properties)
                     found_message = f"Great! Found {num_props} propert{'y' if num_props == 1 else 'ies'} in {selected_title}. Sending them to you now..."
                     if current_language == 'ar':
                         found_message = f"ممتاز! وجدت {num_props} {'عقار' if num_props == 1 else 'عقارات'} في {selected_title}. جاري إرسالها إليك الآن..."
                     send_whatsapp_message(sender, found_message)
-                    time.sleep(1) # Small delay
+                    time.sleep(1)
 
                     for index, prop in city_properties.iterrows():
                         prop_id = str(prop['PropertyID']).strip()
@@ -1255,73 +1250,49 @@ def handle_new_messages():
                             {"type": "quick_reply", "title": "إحجز" if current_language == 'ar' else "Book", "id": f"book_prop_{prop_id}"}
                         ]
 
-                        property_message_data = {
-                            'header': {'text': prop_name},
-                            'body': {'text': prop_desc if prop_desc else (prop_name if current_language == 'ar' else "Property details")}, # Fallback for body
-                            'footer': {'text': "إضغط للإختيار" if current_language == 'ar' else "Click to choose"},
-                            'action': {'buttons': buttons},
-                            'type': 'button', # This should be set by send_interactive_button_message
-                            'to': sender   # This should be set by send_interactive_button_message
-                        }
-
-                        # Use whatsapp_utils.send_interactive_button_message
-                        # The function expects a slightly different structure for message_data
-                        # It internally constructs the full payload.
-
                         formatted_message_for_util = {
-                            'header': prop_name, # Direct text for header
+                            'header': prop_name,
                             'body': prop_desc if prop_desc else (prop_name if current_language == 'ar' else "Property details"),
                             'footer': "إضغط للإختيار" if current_language == 'ar' else "Click to choose",
-                            'buttons': buttons # List of button dicts
+                            'buttons': buttons
                         }
-
                         logging.info(f"Sending property card for {prop_name} (ID: {prop_id}) to {sender}")
                         send_interactive_button_message(sender, formatted_message_for_util)
-                        time.sleep(random.uniform(1.5, 2.5)) # Delay between property messages
+                        time.sleep(random.uniform(1.5, 2.5))
 
-                    # Update flow state to await property action
                     interactive_flow_states[sender]['step'] = f'awaiting_property_action_{selected_title.lower().replace(" ", "_")}'
-                    # Store presented property IDs for context if needed later, e.g.
-                    # interactive_flow_states[sender]['presented_properties'] = city_properties['PropertyID'].tolist()
 
-                    # Send a follow-up message after sending all property cards
                     follow_up_text = "Please choose an option from any of the properties listed above."
                     if current_language == 'ar':
                         follow_up_text = "الرجاء اختيار أحد الخيارات من أي من العقارات المذكورة أعلاه."
                     send_whatsapp_message(sender, follow_up_text)
-
                     return jsonify(status='success_sent_property_cards'), 200
 
-                # --- HANDLERS FOR PROPERTY ACTION BUTTONS ---
                 elif current_step and current_step.startswith('awaiting_property_action_') and button_id:
                     logging.info(f"User {sender} in step {current_step} pressed button: {button_id}")
 
-                    # Clean the button_id by removing potential prefixes
                     cleaned_button_id = button_id
                     if button_id.startswith("ButtonsV3:"):
                         cleaned_button_id = button_id.replace("ButtonsV3:", "")
                         logging.info(f"Cleaned button_id from '{button_id}' to '{cleaned_button_id}'")
 
-                    # Extract action and property_id from cleaned_button_id
                     action_parts = cleaned_button_id.split('_')
                     action_type = ""
                     action_subject = ""
                     prop_id_from_button = ""
 
                     if len(action_parts) >= 3:
-                        action_type = action_parts[0]      # e.g., "show"
-                        action_subject = action_parts[1]   # e.g., "photos"
-                        prop_id_from_button = "_".join(action_parts[2:]) # Handles PropertyIDs that might contain underscores
+                        action_type = action_parts[0]
+                        action_subject = action_parts[1]
+                        prop_id_from_button = "_".join(action_parts[2:])
                     else:
                         logging.warning(f"Could not parse action and property ID from cleaned_button_id: {cleaned_button_id}. Parts: {action_parts}")
 
-                    if not prop_id_from_button: # Check if prop_id_from_button was successfully extracted
+                    if not prop_id_from_button:
                         logging.warning(f"Could not parse PropertyID from button_id: {button_id}")
                         send_whatsapp_message(sender, "Sorry, there was an error processing your request. Please try again.")
                         return jsonify(status='error_parsing_prop_id'), 200
 
-                    # Fetch all properties from Sheet2 again to get details for the selected property
-                    # In a more optimized scenario, we might cache this if the list is very large and frequently accessed
                     properties_df = get_sheet2_data()
                     if properties_df.empty:
                         logging.error(f"Failed to load Sheet2 data for property action: {button_id} by {sender}")
@@ -1336,111 +1307,34 @@ def handle_new_messages():
                         return jsonify(status='error_prop_not_found_for_action'), 200
 
                     prop_details = selected_property.iloc[0]
-                    prop_name = prop_details.get('PropertyName', 'this property')
 
+                    if sender in interactive_flow_states:
+                        interactive_flow_states[sender]['last_interacted_prop_id'] = prop_id_from_button
+                        logging.info(f"Stored last_interacted_prop_id: {prop_id_from_button} for user {sender}")
+
+                    # Call refactored handlers
                     if action_type == "show" and action_subject == "photos":
-                        logging.info(f"Handling 'show_photos' for PropertyID: {prop_id_from_button} for user {sender}")
-                        image_urls = []
-                        for i in range(1, 11): # ImageURL1 to ImageURL10
-                            img_col = f'ImageURL{i}'
-                            if img_col in prop_details and prop_details[img_col] and isinstance(prop_details[img_col], str) and prop_details[img_col].startswith('http'):
-                                image_urls.append(prop_details[img_col])
-
-                        if not image_urls:
-                            msg = f"No images are currently available for {prop_name}."
-                            if current_language == 'ar': msg = f"لا توجد صور متاحة حالياً لـ {prop_name}."
-                            send_whatsapp_message(sender, msg)
-                        else:
-                            msg = f"Sending {len(image_urls)} image(s) for {prop_name}..."
-                            if current_language == 'ar': msg = f"جاري إرسال {len(image_urls)} صورة/صور لـ {prop_name}..."
-                            send_whatsapp_message(sender, msg)
-                            time.sleep(0.5)
-                            for img_url in image_urls:
-                                caption = f"{prop_name} - Image"
-                                if current_language == 'ar': caption = f"{prop_name} - صورة"
-                                send_whatsapp_image_message(sender, caption, img_url)
-                                time.sleep(random.uniform(1.0, 2.0)) # Delay between images
-
-                        # After sending photos, what next? Re-prompt or end?
-                        # For now, just send a confirmation. User can click another button.
-                        # You might want to resend the property card or a menu.
-                        follow_up_text = f"What else would you like to know about {prop_name}?"
-                        if current_language == 'ar': follow_up_text = f"ماذا تريد أن تعرف أيضاً عن {prop_name}؟"
-                        # To resend the card: (Requires careful payload reconstruction)
-                        # original_buttons = [...]
-                        # send_interactive_button_message(sender, {'header': prop_name, 'body': prop_details.get('Description'), ...})
-                        send_whatsapp_message(sender, follow_up_text)
-                        return jsonify(status='success_sent_photos'), 200
-
+                        _handle_show_photos(sender, prop_details, current_language)
+                        return jsonify(status='success_called_show_photos'), 200
                     elif action_type == "show" and action_subject == "prices":
-                        logging.info(f"Handling 'show_prices' for PropertyID: {prop_id_from_button} for user {sender}")
-                        weekday_price = prop_details.get('WeekdayPrice', 'N/A')
-                        weekend_price = prop_details.get('WeekendPrice', 'N/A')
-                        monthly_price = prop_details.get('MonthlyPrice', 'N/A')
-
-                        price_text = ""
-                        if current_language == 'ar':
-                            price_text = f"أسعار {prop_name}:\n" \
-                                         f"- سعر الليلة (أيام الأسبوع): {weekday_price} ريال\n" \
-                                         f"- سعر الليلة (عطلة نهاية الأسبوع): {weekend_price} ريال\n" \
-                                         f"- السعر الشهري: {monthly_price} ريال"
-                        else:
-                            price_text = f"Prices for {prop_name}:\n" \
-                                         f"- Weekday Night: {weekday_price} SAR\n" \
-                                         f"- Weekend Night: {weekend_price} SAR\n" \
-                                         f"- Monthly Price: {monthly_price} SAR"
-                        send_whatsapp_message(sender, price_text)
-                        return jsonify(status='success_sent_prices'), 200
-
-                    elif action_type == "book" and action_subject == "prop": # from book_prop_{id}
-                        logging.info(f"Handling 'book_prop' for PropertyID: {prop_id_from_button} for user {sender}")
-                        booking_link = prop_details.get('BookingLink')
-
-                        response_text = ""
-                        if booking_link and isinstance(booking_link, str) and booking_link.startswith('http'):
-                            if current_language == 'ar':
-                                response_text = f"لحجز {prop_name}, يمكنك استخدام الرابط التالي: {booking_link}\n\nأو يمكن لفريقنا مساعدتك في إتمام الحجز. هل تود المتابعة مع أحد أفراد فريقنا؟"
-                                # Optionally, send buttons "Yes, contact me" / "No, I'll use link"
-                            else:
-                                response_text = f"To book {prop_name}, you can use the following link: {booking_link}\n\nAlternatively, our team can assist you. Would you like us to contact you?"
-                        else:
-                            if current_language == 'ar':
-                                response_text = f"شكراً لاهتمامك بـ {prop_name}. سيقوم أحد أعضاء فريقنا بالتواصل معك قريباً لترتيب الحجز."
-                            else:
-                                response_text = f"Thank you for your interest in {prop_name}. A member of our team will contact you shortly to arrange the booking."
-
-                        send_whatsapp_message(sender, response_text)
-                        # Potentially clear flow or move to a 'booking_requested' state
-                        if sender in interactive_flow_states: del interactive_flow_states[sender]
-                        return jsonify(status='success_handled_booking_action'), 200
-
+                        _handle_show_prices(sender, prop_details, current_language)
+                        return jsonify(status='success_called_show_prices'), 200
+                    elif action_type == "book" and action_subject == "prop":
+                        _handle_book_property(sender, prop_details, current_language)
+                        return jsonify(status='success_called_book_property'), 200
                     else:
-                        logging.warning(f"Unknown action for property button: {button_id}")
+                        logging.warning(f"Unknown action for property button: {button_id} (cleaned: {cleaned_button_id})")
                         send_whatsapp_message(sender, "Sorry, I didn't understand that option for the property.")
                         return jsonify(status='error_unknown_property_action'), 200
 
-
-                # Handle text messages during an active interactive flow
                 elif msg_type == 'text' and body_text_if_any:
-                    # User sent text instead of clicking a button/list
                     response_text = "Please make a selection using the buttons or list provided."
                     if current_language == 'ar':
                         response_text = "الرجاء تحديد اختيارك باستخدام الأزرار أو القائمة المتوفرة."
                     send_whatsapp_message(sender, response_text)
-                    # Optionally, resend the last interactive message.
-                    # This requires storing the type of the last message or the function to call.
-                    # For now, a simple reprompt. Or could exit: del interactive_flow_states[sender]
-                    # Example resend (needs more robust state):
-                    # if interactive_flow_states[sender].get('last_message_type') == 'initial_greeting':
-                    #    send_initial_greeting_message(sender, language=current_language)
                     return jsonify(status='success_interactive_reprompted_text_instead_of_button'), 200
 
-                # If the reply type (button/list) or step wasn't handled above within the interactive flow,
-                # it might be an old message or an unexpected interaction.
-                # We set body_for_fallback earlier, so it can proceed to RAG if needed.
-                # However, if it was a button/list reply meant for the interactive flow but wasn't handled,
-                # it's better to prompt again or exit the flow.
-                elif msg_type == 'reply' and (button_id or selected_row_id): # Unhandled button/list reply in flow
+                elif msg_type == 'reply' and (button_id or selected_row_id):
                     logging.warning(f"User {sender} sent unhandled reply in step {current_step}. ButtonID: {button_id}, ListID: {selected_row_id}")
                     response_text = "Sorry, I encountered an issue with that selection. Let's try starting over."
                     if current_language == 'ar':
@@ -1450,14 +1344,10 @@ def handle_new_messages():
                     interactive_flow_states[sender] = {'step': 'awaiting_initial_choice', 'language': current_language}
                     return jsonify(status='success_interactive_reset'), 200
 
-
-            # --- START: EXISTING "SELL PROPERTY" FLOW LOGIC ---
-            # This existing flow should only trigger if not in the new interactive_flow
             if not user_in_interactive_flow and sender in sell_flow_states:
                 state_info = sell_flow_states[sender]
                 current_state = state_info.get('state')
                 user_data = state_info.get('data', {})
-
                 user_reply_text = ""
                 if msg_type == 'text':
                     user_reply_text = message.get('text', {}).get('body', '').strip()
@@ -1484,7 +1374,6 @@ def handle_new_messages():
                         ]}]
                     }
                     send_interactive_list_message(sender, type_list_data)
-
                 elif current_state == 'awaiting_seller_property_type':
                     user_data['property_type'] = user_reply_text
                     sell_flow_states[sender] = {'state': 'awaiting_seller_city', 'data': user_data}
@@ -1497,19 +1386,14 @@ def handle_new_messages():
                         "sections": [{"title": "Cities in UAE", "rows": city_rows}]
                     }
                     send_interactive_list_message(sender, city_list_data)
-
                 elif current_state == 'awaiting_seller_city':
                     user_data['city'] = user_reply_text
                     sell_flow_states[sender] = {'state': 'awaiting_seller_area', 'data': user_data}
                     areas_for_city = UAE_AREAS.get(user_reply_text, [])
-                    if not areas_for_city:
-                        areas_for_city = ["Other"]
-
+                    if not areas_for_city: areas_for_city = ["Other"]
                     area_rows = [{"id": f"area_{area.lower().replace(' ', '_')}", "title": area} for area in areas_for_city]
                     if not any(r['title'] == 'Other' for r in area_rows) and user_reply_text in UAE_AREAS :
-                         if "Other" not in areas_for_city:
-                            area_rows.append({"id": "area_other", "title": "Other"})
-
+                         if "Other" not in areas_for_city: area_rows.append({"id": "area_other", "title": "Other"})
                     area_list_data = {
                         "header": f"Choosing Area in {user_reply_text}:",
                         "body": "Please select the area.",
@@ -1517,7 +1401,6 @@ def handle_new_messages():
                         "sections": [{"title": f"Areas in {user_reply_text}", "rows": area_rows}]
                     }
                     send_interactive_list_message(sender, area_list_data)
-
                 elif current_state == 'awaiting_seller_area':
                     user_data['area'] = user_reply_text
                     if user_data.get('property_type', '').lower() == 'apartment':
@@ -1526,46 +1409,33 @@ def handle_new_messages():
                     else:
                         sell_flow_states[sender] = {'state': 'awaiting_seller_price', 'data': user_data}
                         send_whatsapp_message(sender, "Great! What is your asking price in AED?")
-
                 elif current_state == 'awaiting_seller_building_name':
                     user_data['building'] = user_reply_text
                     sell_flow_states[sender] = {'state': 'awaiting_seller_price', 'data': user_data}
                     send_whatsapp_message(sender, "Great! And what is your asking price in AED?")
-
                 elif current_state == 'awaiting_seller_price':
                     user_data['price'] = user_reply_text
                     user_data['phone'] = sender.split('@')[0]
-
                     send_whatsapp_message(sender, "Thank you for all the details. Our team will review the information and get in touch with you shortly!")
-
                     email_sent_successfully = send_property_lead_email(user_data)
-                    if email_sent_successfully:
-                        logging.info(f"Property lead email for {user_data.get('name')} sent successfully.")
-                    else:
-                        logging.error(f"Failed to send property lead email for {user_data.get('name')}.")
-
+                    if email_sent_successfully: logging.info(f"Property lead email for {user_data.get('name')} sent successfully.")
+                    else: logging.error(f"Failed to send property lead email for {user_data.get('name')}.")
                     del sell_flow_states[sender]
                 continue
 
-            # --- IF NOT IN ANY FLOW, CHECK FOR GREETINGS TO START INTERACTIVE FLOW ---
-            # Or, if it fell through the interactive flow (e.g. user selected "Other inquiries")
-
-            # Determine body_for_fallback if not already set by interactive flow logic
-            # This is crucial for the RAG/LLM part
-            if body_for_fallback is None: # Was not set by the interactive flow logic
+            if body_for_fallback is None:
                 if msg_type == 'text':
                     body_for_fallback = message.get('text', {}).get('body', '').strip()
-                elif msg_type == 'reply': # An unhandled reply type or one that fell through
+                elif msg_type == 'reply':
                     reply_content = message.get('reply', {})
                     button_title = reply_content.get('buttons_reply', {}).get('title')
                     list_title = reply_content.get('list_reply', {}).get('title')
-                    body_for_fallback = button_title or list_title or "" # Use title if available
+                    body_for_fallback = button_title or list_title or ""
                 elif msg_type == 'image' or msg_type == 'video':
                     body_for_fallback = f"[User sent a {msg_type}]"
                     if message.get('media', {}).get('caption'):
                         body_for_fallback += f" with caption: {message['media']['caption']}"
                 elif msg_type == 'audio':
-                    # (Keep existing audio transcription logic here)
                     media_url = message.get('media', {}).get('url')
                     if media_url and openai_client:
                         try:
@@ -1574,10 +1444,7 @@ def handle_new_messages():
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_audio_file:
                                 tmp_audio_file.write(audio_response.content)
                                 tmp_audio_file_path = tmp_audio_file.name
-
-                            transcript = openai_client.audio.transcriptions.create(
-                                model="whisper-1", file=open(tmp_audio_file_path, "rb")
-                            )
+                            transcript = openai_client.audio.transcriptions.create(model="whisper-1", file=open(tmp_audio_file_path, "rb"))
                             body_for_fallback = transcript.text
                             os.remove(tmp_audio_file_path)
                         except Exception as e:
@@ -1585,85 +1452,37 @@ def handle_new_messages():
                             body_for_fallback = "[Audio transcription failed.]"
                     else:
                         body_for_fallback = "[Audio received, but could not be transcribed.]"
-                # else: body_for_fallback remains None or its previously set value
 
             if not user_in_interactive_flow and not (sender in sell_flow_states) and body_for_fallback:
-                # Using body_text_if_any for greeting check, as it's cleaner (already extracted text part)
-                # If body_text_if_any is empty (e.g. image message), it won't be a greeting.
                 current_text_for_greeting_check = body_text_if_any.strip().lower()
                 greetings = ["hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "مرحبا", "السلام عليكم", "هلا", "هاي"]
-                # Check for exact match or if the text *starts with* a greeting (for greetings longer than 2 chars)
                 is_greeting = any(greet == current_text_for_greeting_check for greet in greetings) or \
                               any(current_text_for_greeting_check.startswith(greet) for greet in greetings if len(greet) > 2)
-
                 if is_greeting:
                     logging.info(f"User {sender} sent a greeting: '{current_text_for_greeting_check}'. Starting interactive flow in {current_language}.")
                     send_initial_greeting_message(sender, language=current_language)
                     interactive_flow_states[sender] = {'step': 'awaiting_initial_choice', 'language': current_language}
                     return jsonify(status='success_interactive_started'), 200
 
-            # --- FALLBACK to existing command/RAG logic ---
-            # Ensure body_for_fallback is set for RAG if message wasn't handled by interactive flow and didn't start one.
-            # The RAG logic should only run if the message was not fully processed by an interactive flow.
-
-            if not (sender and body_for_fallback): # Check if sender and body_for_fallback are valid
-                # This check might be redundant if the message was already handled and returned,
-                # but it's a safeguard.
+            if not (sender and body_for_fallback):
                 if msg_type == 'reply' and message.get('reply', {}).get('type') == 'list_reply' and not (sender in sell_flow_states or user_in_interactive_flow) :
                      logging.warning(f"Received list_reply from {sender} outside of any active flow. Ignoring.")
-                elif not body_for_fallback: # If body_for_fallback is still empty or None
+                elif not body_for_fallback:
                      logging.warning(f"Webhook ignored: no sender or body_for_fallback. Message Type: {msg_type}, Message: {message}")
-                continue # Skip to next message in loop if this one is not processable
+                continue
 
-            # The rest of the original /hook logic (global pause, RAG, etc.) follows here.
-            # It will use 'body_for_fallback' as the user's message content.
-            # Make sure the existing 'if button_id and button_id.endswith('button_1_id'):'
-            # for the old sell_flow is correctly placed or adapted if it needs to be outside
-            # the new interactive flow logic entirely. The current placement of "SELL PROPERTY" flow
-            # check (if not user_in_interactive_flow and sender in sell_flow_states) is correct.
-
-            # The original button check for "sell_flow_states" was:
-            # if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply':
-            #    ...
-            #    if button_id and button_id.endswith('button_1_id'): # THIS IS FOR THE OLD FLOW
-            #        sell_flow_states[sender] = {'state': 'awaiting_seller_name', 'data': {}}
-            #        send_whatsapp_message(sender, "Great! We can certainly help with that. To start, could you please tell me your full name?")
-            #        continue
-            # This specific button ('button_1_id') needs to be differentiated from the new interactive flow buttons.
-            # For now, assuming 'button_1_id' is exclusively for the old sell flow and won't clash.
-            # If there's a general button handler, it needs to be careful.
-            # The current structure places the new interactive flow first. If it handles a message, it returns.
-            # If not, it falls through. Then the old sell_flow is checked. If that handles, it continues or returns.
-            # If neither, then the RAG logic gets body_for_fallback.
-
-            # Ensure the old sell flow button logic is handled correctly if it's not part of the new flow.
-            # The current structure:
-            # 1. New Interactive flow (if active)
-            # 2. Old Sell flow (if active and not in new interactive flow)
-            # 3. Greeting check (if not in any flow)
-            # 4. RAG/LLM (if body_for_fallback is set and not handled above)
-
-            # The original code for getting body_for_fallback from buttons for the RAG part:
             if msg_type == 'reply' and message.get('reply', {}).get('type') == 'buttons_reply' and not user_in_interactive_flow and not (sender in sell_flow_states):
-                # This is if a button reply was NOT handled by interactive flow and NOT by sell_flow
                 button_reply_data = message['reply']['buttons_reply']
-                button_id = button_reply_data.get('id') # Could be from an old message or unhandled
+                button_id = button_reply_data.get('id')
                 button_title = button_reply_data.get('title')
-                # The original sell_flow button check:
-                if button_id and button_id.endswith('button_1_id'): # This is part of the old "sell property" initiation
+                if button_id and button_id.endswith('button_1_id'):
                     sell_flow_states[sender] = {'state': 'awaiting_seller_name', 'data': {}}
                     send_whatsapp_message(sender, "Great! We can certainly help with that. To start, could you please tell me your full name?")
-                    continue # Handled by starting the old sell_flow
-                # If it's another button not handled by any flow, its title goes to RAG
+                    continue
                 body_for_fallback = button_title
                 logging.info(f"User {sender} clicked unhandled button: ID='{button_id}', Title='{button_title}'. Passing title to RAG.")
 
-
-            # Ensure audio transcription is only done if body_for_fallback is not already set
-            # The current logic sets body_for_fallback from various sources. If it's still None, then try audio.
-            # This seems fine.
-
-            if msg_type == 'audio' and not body_for_fallback: # Only transcribe if not already processed
+            if msg_type == 'audio' and not body_for_fallback:
                 media_url = message.get('media', {}).get('url')
                 if media_url and openai_client:
                     try:
@@ -1672,10 +1491,7 @@ def handle_new_messages():
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_audio_file:
                             tmp_audio_file.write(audio_response.content)
                             tmp_audio_file_path = tmp_audio_file.name
-
-                        transcript = openai_client.audio.transcriptions.create(
-                            model="whisper-1", file=open(tmp_audio_file_path, "rb")
-                        )
+                        transcript = openai_client.audio.transcriptions.create(model="whisper-1", file=open(tmp_audio_file_path, "rb"))
                         body_for_fallback = transcript.text
                         os.remove(tmp_audio_file_path)
                     except Exception as e:
@@ -1691,7 +1507,6 @@ def handle_new_messages():
                      logging.warning(f"Webhook ignored: no sender or body_for_fallback. Message Type: {msg_type}, Message: {message}")
                 continue
 
-            # --- FALLBACK to existing command/RAG logic ---
             normalized_body = body_for_fallback.lower().strip()
             global is_globally_paused
 
@@ -1700,14 +1515,12 @@ def handle_new_messages():
                 send_whatsapp_message(sender, "Bot is now globally paused.")
                 logging.info(f"Bot globally paused by {sender}.")
                 continue
-
             if normalized_body == "bot resume all":
                 is_globally_paused = False
                 paused_conversations.clear()
                 send_whatsapp_message(sender, "Bot is now globally resumed. All specific conversation pauses have been cleared.")
                 logging.info(f"Bot globally resumed by {sender}. Specific pauses cleared.")
                 continue
-
             if normalized_body.startswith("bot pause "):
                 parts = normalized_body.split("bot pause ", 1)
                 if len(parts) > 1 and parts[1].strip():
@@ -1719,7 +1532,6 @@ def handle_new_messages():
                     send_whatsapp_message(sender, "Invalid command format. Use: bot pause <target_user_id>")
                     logging.info(f"Invalid 'bot pause' command from {sender}: {normalized_body}")
                 continue
-
             if normalized_body.startswith("bot resume "):
                 parts = normalized_body.split("bot resume ", 1)
                 if len(parts) > 1 and parts[1].strip():
@@ -1731,21 +1543,17 @@ def handle_new_messages():
                     send_whatsapp_message(sender, "Invalid command format. Use: bot resume <target_user_id>")
                     logging.info(f"Invalid 'bot resume' command from {sender}: {normalized_body}")
                 continue
-
             if normalized_body.startswith("bot start outreach"):
                 parts = normalized_body.split("bot start outreach", 1)
                 sheet_specifier = parts[1].strip() if len(parts) > 1 and parts[1].strip() else os.getenv('DEFAULT_OUTREACH_SHEET_ID')
-
                 if not sheet_specifier:
                     send_whatsapp_message(sender, "Error: No Google Sheet ID was provided or found in the default environment variable.")
                     logging.warning(f"Outreach command by {sender} failed: no sheet specifier.")
                     continue
-
                 parsed_sheet_id = extract_sheet_id_from_url(sheet_specifier)
                 if not parsed_sheet_id:
                     send_whatsapp_message(sender, f"Error: The provided Google Sheet specifier '{sheet_specifier}' is invalid.")
                     continue
-
                 send_whatsapp_message(sender, f"Outreach campaign started using Sheet ID: {parsed_sheet_id}. You will be notified upon completion.")
                 executor.submit(process_outreach_campaign, parsed_sheet_id, sender, current_app.app_context())
                 logging.info(f"Outreach campaign submitted to executor for {sender} with Sheet ID: {parsed_sheet_id}.")
@@ -1754,17 +1562,14 @@ def handle_new_messages():
             if is_globally_paused:
                 logging.info(f"Bot is globally paused. Ignoring message from {sender}: {body_for_fallback[:100]}...")
                 continue
-
             if sender in paused_conversations:
                 logging.info(f"Conversation with {sender} is paused. Ignoring message: {body_for_fallback[:100]}...")
                 continue
 
             user_id = ''.join(c for c in sender if c.isalnum())
             logging.info(f"Incoming from {sender} (UID: {user_id}): {body_for_fallback}")
-
             history = load_history(user_id)
             llm_response_data = get_llm_response(body_for_fallback, sender, history)
-
             final_model_response_for_history = ""
 
             if llm_response_data['type'] == 'image':
@@ -1788,8 +1593,7 @@ def handle_new_messages():
                     if not send_whatsapp_message(sender, chunk):
                         logging.error(f"Failed to send chunk {idx}/{len(chunks)} to {sender}. Aborting further sends for this message.")
                         break
-                    if idx < len(chunks):
-                        time.sleep(random.uniform(2.0, 3.0))
+                    if idx < len(chunks): time.sleep(random.uniform(2.0, 3.0))
             else:
                 logging.error(f"Unknown response type from get_llm_response: {llm_response_data.get('type')}")
                 final_model_response_for_history = "[Error: Unknown response type from LLM]"
@@ -1800,22 +1604,96 @@ def handle_new_messages():
             new_history_model = {'role': 'model', 'parts': [final_model_response_for_history]}
             history.append(new_history_user)
             history.append(new_history_model)
-
             MAX_HISTORY_TURNS = 10
             if len(history) > MAX_HISTORY_TURNS * 2:
                 history = history[-(MAX_HISTORY_TURNS * 2):]
-
             save_history(user_id, history)
-
         return jsonify(status='success'), 200
-
     except json.JSONDecodeError as je:
         logging.error(f"Webhook JSONDecodeError: {je}. Raw data: {request.data}")
         return jsonify(status='error', message='Invalid JSON payload'), 400
     except Exception as e:
         logging.exception(f"FATAL Error in webhook processing: {e}")
         return jsonify(status='error', message='Internal Server Error'), 500
-# END OF NEW handle_new_messages
+
+# --- Helper functions for property actions ---
+def _handle_show_photos(sender, prop_details, current_language):
+    prop_name = prop_details.get('PropertyName', 'this property')
+    logging.info(f"Executing _handle_show_photos for PropertyName: {prop_name} for user {sender}")
+    image_urls = []
+    # Assuming ImageURL1 to ImageURL10 are the columns in prop_details (which is a pandas Series)
+    for i in range(1, 11):
+        img_col = f'ImageURL{i}'
+        url_val = prop_details.get(img_col)
+        if url_val and isinstance(url_val, str) and url_val.startswith('http'):
+            image_urls.append(url_val)
+
+    if not image_urls:
+        msg = f"No images are currently available for {prop_name}."
+        if current_language == 'ar': msg = f"لا توجد صور متاحة حالياً لـ {prop_name}."
+        send_whatsapp_message(sender, msg)
+    else:
+        msg = f"Sending {len(image_urls)} image(s) for {prop_name}..."
+        if current_language == 'ar': msg = f"جاري إرسال {len(image_urls)} صورة/صور لـ {prop_name}..."
+        send_whatsapp_message(sender, msg)
+        time.sleep(0.5)
+        for img_url in image_urls:
+            # Custom caption logic will be added in a later step here
+            caption = f"{prop_name} - Image"
+            if current_language == 'ar': caption = f"{prop_name} - صورة"
+            send_whatsapp_image_message(sender, caption, img_url)
+            time.sleep(random.uniform(1.0, 2.0))
+
+    follow_up_text = f"What else would you like to know about {prop_name}? You can ask about prices, booking, or see photos again."
+    if current_language == 'ar': follow_up_text = f"ماذا تريد أن تعرف أيضاً عن {prop_name}؟ يمكنك السؤال عن الأسعار، الحجز، أو مشاهدة الصور مرة أخرى."
+    send_whatsapp_message(sender, follow_up_text)
+
+def _handle_show_prices(sender, prop_details, current_language):
+    prop_name = prop_details.get('PropertyName', 'this property')
+    logging.info(f"Executing _handle_show_prices for PropertyName: {prop_name} for user {sender}")
+    weekday_price = prop_details.get('WeekdayPrice', 'N/A')
+    weekend_price = prop_details.get('WeekendPrice', 'N/A')
+    monthly_price = prop_details.get('MonthlyPrice', 'N/A')
+
+    price_text = ""
+    if current_language == 'ar':
+        price_text = f"أسعار {prop_name}:\n" \
+                     f"- سعر الليلة (أيام الأسبوع): {weekday_price} ريال\n" \
+                     f"- سعر الليلة (عطلة نهاية الأسبوع): {weekend_price} ريال\n" \
+                     f"- السعر الشهري: {monthly_price} ريال"
+    else:
+        price_text = f"Prices for {prop_name}:\n" \
+                     f"- Weekday Night: {weekday_price} SAR\n" \
+                     f"- Weekend Night: {weekend_price} SAR\n" \
+                     f"- Monthly Price: {monthly_price} SAR"
+    send_whatsapp_message(sender, price_text)
+
+    follow_up_text = f"What else would you like to know about {prop_name}? You can ask about photos, booking, or see prices again."
+    if current_language == 'ar': follow_up_text = f"ماذا تريد أن تعرف أيضاً عن {prop_name}؟ يمكنك السؤال عن الصور، الحجز، أو مشاهدة الأسعار مرة أخرى."
+    send_whatsapp_message(sender, follow_up_text)
+
+def _handle_book_property(sender, prop_details, current_language):
+    prop_name = prop_details.get('PropertyName', 'this property')
+    logging.info(f"Executing _handle_book_property for PropertyName: {prop_name} for user {sender}")
+    booking_link = prop_details.get('BookingLink')
+
+    response_text = ""
+    if booking_link and isinstance(booking_link, str) and booking_link.startswith('http'):
+        if current_language == 'ar':
+            response_text = f"لحجز {prop_name}, يمكنك استخدام الرابط التالي: {booking_link}\n\nأو يمكن لفريقنا مساعدتك في إتمام الحجز. هل تود المتابعة مع أحد أفراد فريقنا؟"
+        else:
+            response_text = f"To book {prop_name}, you can use the following link: {booking_link}\n\nAlternatively, our team can assist you. Would you like us to contact you?"
+    else:
+        if current_language == 'ar':
+            response_text = f"شكراً لاهتمامك بـ {prop_name}. سيقوم أحد أعضاء فريقنا بالتواصل معك قريباً لترتيب الحجز."
+        else:
+            response_text = f"Thank you for your interest in {prop_name}. A member of our team will contact you shortly to arrange the booking."
+
+    send_whatsapp_message(sender, response_text)
+    if sender in interactive_flow_states:
+        old_state = interactive_flow_states[sender].copy()
+        del interactive_flow_states[sender]
+        logging.info(f"Cleared interactive_flow_state for {sender} after booking action. Old state was: {old_state}")
 
 # ─── Background Task Function for Google Document Updates ──────────────────────
 def process_google_document_update(document_id, app_context):
@@ -1828,7 +1706,6 @@ def process_google_document_update(document_id, app_context):
         try:
             logging.info(f"Background task started for Google Drive document_id: {document_id}")
 
-            # Get RAG components from Flask app config
             vector_store = current_app.config.get('VECTOR_STORE')
             embeddings = current_app.config.get('EMBEDDINGS')
 
@@ -1836,14 +1713,12 @@ def process_google_document_update(document_id, app_context):
                 logging.critical(f"Background task for {document_id}: VECTOR_STORE or EMBEDDINGS not found in app.config. Aborting RAG update.")
                 return
 
-            # Get MIME type of the Google Drive file
             mime_type = get_google_drive_file_mime_type(document_id)
             if mime_type is None:
                 logging.error(f"Background task for {document_id}: Failed to fetch MIME type, or file not found/accessible. Aborting RAG update.")
                 return
 
             text_content = None
-            # Fetch content based on MIME type
             if mime_type == 'application/vnd.google-apps.document':
                 logging.info(f"Document ID {document_id} is a Google Doc. Fetching content...")
                 text_content = get_google_doc_content(document_id)
@@ -1852,9 +1727,8 @@ def process_google_document_update(document_id, app_context):
                 text_content = get_google_sheet_content(document_id)
             else:
                 logging.warning(f"Unsupported MIME type '{mime_type}' for document ID {document_id}. Skipping RAG processing.")
-                return # Exit if MIME type is not supported
+                return
 
-            # Process content if it was successfully fetched
             if text_content is not None:
                 logging.info(f"Successfully fetched content for {document_id}. Length: {len(text_content)}. Processing for RAG...")
                 success = process_google_document_text(document_id, text_content, vector_store, embeddings)
@@ -1863,7 +1737,6 @@ def process_google_document_update(document_id, app_context):
                 else:
                     logging.error(f"Failed to process document ID {document_id} for RAG store.")
             else:
-                # This case implies get_google_doc_content or get_google_sheet_content returned None
                 logging.error(f"Failed to fetch content for document ID {document_id} (MIME type: {mime_type}). RAG store not updated.")
 
             logging.info(f"Background task finished for Google Drive document_id: {document_id}")
@@ -1881,9 +1754,6 @@ def is_property_related_query(text):
     return any(keyword in text_lower for keyword in keywords)
 
 if __name__ == '__main__':
-    # Set up webhook on startup
     set_webhook()
-
-    # Start the Flask app
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
