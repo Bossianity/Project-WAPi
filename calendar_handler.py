@@ -1,177 +1,350 @@
 import os
+import json
 from datetime import datetime, timedelta
 import dateparser
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import pytz # Added for timezone definitions
+import pytz
+import logging
 
-# --- Timezone Configuration (to align with main script's workaround) ---
-# Timezone for user interaction and display (if this script were to do that)
-# TARGET_DISPLAY_TIMEZONE = pytz.timezone('Asia/Dubai') # Not directly used in this version of the handler for event creation
-# Timezone for storing events in Google Calendar (workaround)
+# --- Timezone Configuration ---
 EVENT_STORAGE_TIMEZONE = pytz.timezone('America/New_York')
-# --- End Timezone Configuration ---
+DEFAULT_USER_INPUT_TIMEZONE_STR = os.getenv('DEFAULT_USER_TIMEZONE', 'Asia/Dubai')
+DEFAULT_USER_INPUT_TIMEZONE = pytz.timezone(DEFAULT_USER_INPUT_TIMEZONE_STR)
 
-# Load credentials path from environment variables
 CREDENTIALS_PATH = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-# Using 'primary' calendar for consistency with the main script's approach.
-# If a specific CALENDAR_ID is needed, set it via os.getenv('GOOGLE_CALENDAR_ID')
-# and ensure it's the correct target.
-CALENDAR_ID_TO_USE = 'primary' 
-# CALENDAR_ID_TO_USE = os.getenv('GOOGLE_CALENDAR_ID', 'primary') # Alternative if env var is preferred
 
 def get_calendar_service():
     """Initialize and return the Google Calendar API service."""
     try:
         if not CREDENTIALS_PATH:
-            print("Error: GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
+            logging.error("Error: GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
             return None
+
         credentials = service_account.Credentials.from_service_account_file(
             CREDENTIALS_PATH,
             scopes=['https://www.googleapis.com/auth/calendar']
         )
         service = build('calendar', 'v3', credentials=credentials)
+        logging.info("Google Calendar service initialized successfully.")
         return service
     except Exception as e:
-        print(f"Error initializing calendar service: {e}")
+        logging.error(f"Error initializing calendar service: {e}", exc_info=True)
         return None
 
-def create_appointment(summary, start_time_str_event_tz, user_phone, duration_minutes=60):
+def find_or_create_calendar_by_property_id(service, property_id):
     """
-    Create an appointment in Google Calendar, assuming start_time_str_event_tz
-    is an ISO string for the EVENT_STORAGE_TIMEZONE (e.g., America/New_York).
-    
-    Args:
-        summary (str): The title/description of the appointment.
-        start_time_str_event_tz (str): Start time in ISO format, corresponding to EVENT_STORAGE_TIMEZONE.
-                                      Example: "2025-05-30T10:00:00-04:00" for 10 AM New York EDT.
-        user_phone (str): User's phone number for reference.
-        duration_minutes (int): Duration of the appointment in minutes.
-        
-    Returns:
-        str: HTML link to the created event if successful, None otherwise.
+    Finds a calendar by property_id (matching summary). If not found, creates one.
+    Returns the calendar ID.
     """
+    if not service:
+        logging.error("Calendar service not available for find_or_create_calendar.")
+        return None
     try:
-        service = get_calendar_service()
-        if not service:
-            return None
+        calendar_list_page_token = None
+        while True:
+            calendar_list = service.calendarList().list(pageToken=calendar_list_page_token).execute()
+            for calendar_list_entry in calendar_list['items']:
+                if calendar_list_entry['summary'] == property_id:
+                    logging.info(f"Found existing calendar for property ID '{property_id}': {calendar_list_entry['id']}")
+                    return calendar_list_entry['id']
+            calendar_list_page_token = calendar_list.get('nextPageToken')
+            if not calendar_list_page_token:
+                break
 
-        # Parse the start time. datetime.fromisoformat will correctly handle
-        # ISO strings with timezone offsets (e.g., "-04:00").
-        # The resulting start_time will be timezone-aware.
-        start_time_aware = datetime.fromisoformat(start_time_str_event_tz)
-        
-        # Ensure it's in the EVENT_STORAGE_TIMEZONE if it somehow wasn't, or to be explicit.
-        # This step might be redundant if start_time_str_event_tz is guaranteed to be correctly formatted
-        # with the EVENT_STORAGE_TIMEZONE's offset.
-        start_time_event_tz = start_time_aware.astimezone(EVENT_STORAGE_TIMEZONE)
-        
-        end_time_event_tz = start_time_event_tz + timedelta(minutes=duration_minutes)
+        logging.info(f"No calendar found for property ID '{property_id}'. Creating new one...")
+        calendar_body = {
+            'summary': property_id,
+            'timeZone': EVENT_STORAGE_TIMEZONE.zone
+        }
+        created_calendar = service.calendars().insert(body=calendar_body).execute()
+        logging.info(f"Created new calendar for property ID '{property_id}': {created_calendar['id']}")
+        return created_calendar['id']
+    except Exception as e:
+        logging.error(f"Error finding or creating calendar for property ID '{property_id}': {e}", exc_info=True)
+        return None
 
-        print(f"Calendar_handler: Creating event with {EVENT_STORAGE_TIMEZONE.zone} times - Start: {start_time_event_tz}, End: {end_time_event_tz}")
+def check_calendar_availability(service, calendar_id, start_datetime_utc, end_datetime_utc):
+    """
+    Checks if a given time slot is available in the specified calendar.
+    Considers events that are 'confirmed' or 'tentative'. Does not count 'cancelled' events.
+    Args:
+        service: Google Calendar API service instance.
+        calendar_id (str): The ID of the calendar to check.
+        start_datetime_utc (datetime): Start of the slot in UTC.
+        end_datetime_utc (datetime): End of the slot in UTC.
+    Returns:
+        bool: True if available, False otherwise.
+    """
+    if not service or not calendar_id:
+        logging.error("Calendar service or calendar_id not available for checking availability.")
+        return False
+    try:
+        time_min_rfc = start_datetime_utc.isoformat()
+        time_max_rfc = end_datetime_utc.isoformat()
 
-        # Create the event
+        logging.info(f"Checking availability for calendar '{calendar_id}' between {time_min_rfc} and {time_max_rfc} (UTC)")
+
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=time_min_rfc,
+            timeMax=time_max_rfc,
+            singleEvents=True,
+            orderBy='startTime',
+            timeZone='UTC',
+            showDeleted=False
+        ).execute()
+
+        items = events_result.get('items', [])
+
+        conflicting_events = []
+        for event in items:
+            if event.get('status') == 'cancelled':
+                continue
+
+            event_start_str = event['start'].get('dateTime', event['start'].get('date'))
+            event_end_str = event['end'].get('dateTime', event['end'].get('date'))
+
+            try:
+                if 'T' in event_start_str:
+                    event_start_utc = datetime.fromisoformat(event_start_str.replace('Z', '+00:00')).astimezone(pytz.utc)
+                else:
+                    event_start_utc = pytz.utc.localize(datetime.fromisoformat(event_start_str))
+
+                if 'T' in event_end_str:
+                    event_end_utc = datetime.fromisoformat(event_end_str.replace('Z', '+00:00')).astimezone(pytz.utc)
+                else:
+                    event_end_utc = pytz.utc.localize(datetime.fromisoformat(event_end_str))
+            except Exception as date_parse_err:
+                logging.warning(f"Could not parse event times for event '{event.get('summary')}': {date_parse_err}. Skipping this event in availability check.")
+                continue
+
+            if event_start_utc < end_datetime_utc and event_end_utc > start_datetime_utc:
+                conflicting_events.append(event)
+
+        if not conflicting_events:
+            logging.info(f"No conflicting (non-cancelled) events found. Slot is available in calendar '{calendar_id}'.")
+            return True
+        else:
+            logging.info(f"Found {len(conflicting_events)} conflicting (non-cancelled) event(s) in calendar '{calendar_id}':")
+            for item in conflicting_events:
+                logging.info(f"  - Event: {item.get('summary')}, Start: {item['start'].get('dateTime', item['start'].get('date'))}, End: {item['end'].get('dateTime', item['end'].get('date'))}, Status: {item.get('status')}")
+            return False
+
+    except Exception as e:
+        logging.error(f"Error checking calendar availability for calendar '{calendar_id}': {e}", exc_info=True)
+        return False
+
+def create_booking_event(service, calendar_id, property_id_str, start_date_user_tz, num_days, client_name, client_phone, check_in_time_str="2 PM", check_out_time_str="11 AM"):
+    """
+    Creates a booking event.
+    Args:
+        start_date_user_tz (datetime): Start DATE of booking in user's local timezone (tz-aware). Time component is ignored.
+        num_days (int): Number of nights.
+    Returns:
+        dict: The created event object if successful, None otherwise.
+    """
+    if not service or not calendar_id:
+        logging.error("Calendar service or calendar_id not available for creating event.")
+        return None
+
+    try:
+        parsed_check_in_time = dateparser.parse(check_in_time_str).time()
+        check_in_datetime_user_tz = start_date_user_tz.replace(
+            hour=parsed_check_in_time.hour,
+            minute=parsed_check_in_time.minute,
+            second=0, microsecond=0
+        )
+        actual_check_in_datetime_storage_tz = check_in_datetime_user_tz.astimezone(EVENT_STORAGE_TIMEZONE)
+
+        check_out_date_user_tz = (start_date_user_tz.date() + timedelta(days=num_days))
+        parsed_check_out_time = dateparser.parse(check_out_time_str).time()
+
+        check_out_datetime_naive = datetime.combine(check_out_date_user_tz, parsed_check_out_time)
+        check_out_datetime_user_tz = start_date_user_tz.tzinfo.localize(check_out_datetime_naive)
+        actual_check_out_datetime_storage_tz = check_out_datetime_user_tz.astimezone(EVENT_STORAGE_TIMEZONE)
+
+        event_summary_final = f"Booking: {property_id_str} - {client_name}"
+        event_description = (
+            f"Property: {property_id_str}\n"
+            f"Client: {client_name}\n"
+            f"Contact: {client_phone}\n"
+            f"Check-in: {actual_check_in_datetime_storage_tz.strftime('%Y-%m-%d %I:%M %p %Z')}\n"
+            f"Check-out: {actual_check_out_datetime_storage_tz.strftime('%Y-%m-%d %I:%M %p %Z')}\n"
+            f"Nights: {num_days}"
+        )
+
+        logging.info(f"Creating event in calendar '{calendar_id}' ({EVENT_STORAGE_TIMEZONE.zone}) - "
+                     f"Check-in: {actual_check_in_datetime_storage_tz.isoformat()}, "
+                     f"Check-out: {actual_check_out_datetime_storage_tz.isoformat()}")
+
         event_body = {
-            'summary': summary,
-            'description': f'Appointment for user: {user_phone}. (Handled by calendar_handler.py)',
+            'summary': event_summary_final,
+            'description': event_description,
             'start': {
-                'dateTime': start_time_event_tz.isoformat(), # ISO format with correct offset for EVENT_STORAGE_TIMEZONE
-                'timeZone': EVENT_STORAGE_TIMEZONE.zone,   # Explicitly 'America/New_York'
+                'dateTime': actual_check_in_datetime_storage_tz.isoformat(),
+                'timeZone': EVENT_STORAGE_TIMEZONE.zone,
             },
             'end': {
-                'dateTime': end_time_event_tz.isoformat(),   # ISO format with correct offset for EVENT_STORAGE_TIMEZONE
-                'timeZone': EVENT_STORAGE_TIMEZONE.zone,   # Explicitly 'America/New_York'
+                'dateTime': actual_check_out_datetime_storage_tz.isoformat(),
+                'timeZone': EVENT_STORAGE_TIMEZONE.zone,
             },
-            # Optional: Add attendees or reminders if needed by this handler
-            # 'attendees': [{'email': 'some_attendee@example.com'}],
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'popup', 'minutes': 60 * 24},
+                    {'method': 'popup', 'minutes': 60 * 2}
+                ],
+            },
         }
 
-        print(f"Calendar_handler: Creating calendar event with payload: {json.dumps(event_body, indent=2)}")
-        # Insert the event
-        created_event = service.events().insert(calendarId=CALENDAR_ID_TO_USE, body=event_body).execute()
-        
-        print(f"Calendar_handler: Event created. Link: {created_event.get('htmlLink')}, ID: {created_event.get('id')}")
-        # === Optional Diagnostic: Fetch event by ID (similar to main script) ===
-        # if created_event and created_event.get('id'):
-        #     try:
-        #         retrieved_event = service.events().get(calendarId=CALENDAR_ID_TO_USE, eventId=created_event.get('id')).execute()
-        #         print(f"Calendar_handler DIAGNOSTIC: Successfully retrieved event by ID. Summary: {retrieved_event.get('summary')}")
-        #     except Exception as e_get_diag:
-        #         print(f"Calendar_handler DIAGNOSTIC ERROR: Failed to retrieve event by ID. Error: {e_get_diag}")
-        # === End Optional Diagnostic ===
-        
-        return created_event.get('htmlLink')
+        logging.debug(f"Calendar_handler: Event payload: {json.dumps(event_body, indent=2)}")
+        created_event = service.events().insert(calendarId=calendar_id, body=event_body).execute()
+
+        logging.info(f"Calendar_handler: Event created in '{calendar_id}'. Link: {created_event.get('htmlLink')}, ID: {created_event.get('id')}")
+        return created_event
 
     except Exception as e:
-        print(f"Error creating appointment in calendar_handler: {e}")
+        logging.error(f"Error creating booking event in calendar '{calendar_id}': {e}", exc_info=True)
         return None
 
-def parse_human_datetime(text):
+def parse_user_date_input(date_str, user_timezone=DEFAULT_USER_INPUT_TIMEZONE):
     """
-    Parse a human-readable datetime string into a Python datetime object,
-    localized to Asia/Dubai.
-    
-    Args:
-        text (str): Human-readable datetime string (e.g., "tomorrow at 4pm")
-        
-    Returns:
-        datetime: Parsed datetime object (Asia/Dubai aware), or None if parsing fails.
+    Parses a date string (e.g., YYYY-MM-DD, "today", "tomorrow")
+    Returns a datetime object for start of that day in user's timezone.
     """
     try:
-        # Configure dateparser to prefer dates in the future if ambiguous
+        parsed_date_obj = dateparser.parse(date_str, settings={'PREFER_DATES_FROM': 'future'})
+        if not parsed_date_obj:
+            logging.error(f"Dateparser failed for date string: '{date_str}'")
+            return None
+
+        parsed_dt_naive = datetime.combine(parsed_date_obj.date(), datetime.min.time())
+        parsed_dt_aware = user_timezone.localize(parsed_dt_naive)
+        return parsed_dt_aware
+    except Exception as e:
+        logging.error(f"Failed to parse date string '{date_str}': {e}", exc_info=True)
+        return None
+
+def parse_human_datetime(text, reference_timezone_str=DEFAULT_USER_INPUT_TIMEZONE_STR):
+    """
+    Parse human-readable datetime string to datetime object, localized to reference_timezone.
+    """
+    try:
         settings = {'PREFER_DATES_FROM': 'future'}
         parsed_date = dateparser.parse(text, settings=settings)
-        
+
         if parsed_date:
-            dubai_tz = pytz.timezone('Asia/Dubai')
-            # If parsed_date is naive, localize to Dubai.
-            # If it's already aware (dateparser might sometimes infer a local system timezone),
-            # convert it to Dubai.
+            target_tz = pytz.timezone(reference_timezone_str)
             if parsed_date.tzinfo is None or parsed_date.tzinfo.utcoffset(parsed_date) is None:
-                parsed_date = dubai_tz.localize(parsed_date)
+                parsed_date = target_tz.localize(parsed_date)
             else:
-                parsed_date = parsed_date.astimezone(dubai_tz)
+                parsed_date = parsed_date.astimezone(target_tz)
             return parsed_date
+        logging.warning(f"Could not parse human datetime: '{text}'")
         return None
     except Exception as e:
-        print(f"Error parsing datetime in calendar_handler: {e}")
+        logging.error(f"Error parsing human datetime '{text}': {e}", exc_info=True)
         return None
 
-# Example Usage (for testing this handler independently):
-if __name__ == '__main__':
-    print("Testing calendar_handler.py...")
-    
-    # This test assumes GOOGLE_APPLICATION_CREDENTIALS is set.
-    
-    # 1. Test parse_human_datetime
-    raw_time_text = "tomorrow 3pm"
-    dubai_aware_dt = parse_human_datetime(raw_time_text)
-    
-    if dubai_aware_dt:
-        print(f"Parsed '{raw_time_text}' to Dubai time: {dubai_aware_dt.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-        
-        # 2. Convert this Dubai time to New York time for event creation
-        new_york_aware_dt = dubai_aware_dt.astimezone(EVENT_STORAGE_TIMEZONE)
-        print(f"Converted to New York time for storage: {new_york_aware_dt.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-        
-        # 3. Format as ISO string for create_appointment function
-        start_iso_for_handler = new_york_aware_dt.isoformat()
-        
-        # 4. Test create_appointment
-        print(f"\nAttempting to create test appointment using New York time via calendar_handler...")
-        event_summary = "Test Appointment via Handler (Stored NY)"
-        user_phone_example = "1234567890"
-        
-        # Ensure GOOGLE_APPLICATION_CREDENTIALS is set in your environment to run this test
-        if os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
-            html_link = create_appointment(event_summary, start_iso_for_handler, user_phone_example, duration_minutes=45)
-            if html_link:
-                print(f"Successfully created test appointment. Link: {html_link}")
-            else:
-                print("Failed to create test appointment via handler.")
-        else:
-            print("Skipping create_appointment test as GOOGLE_APPLICATION_CREDENTIALS is not set.")
-            
-    else:
-        print(f"Could not parse '{raw_time_text}'")
+# Original create_appointment function (commented out as it's superseded by create_booking_event)
+# def create_appointment(summary, start_time_str_event_tz, user_phone, duration_minutes=60):
+#    ... (original content) ...
+#    pass
 
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
+
+    test_property_id = f"TEST_PROP_CAL_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    service = get_calendar_service()
+    if not service:
+        logging.error("Failed to get calendar service. Exiting test.")
+        exit()
+
+    logging.info(f"\n--- Test 1: Find or Create Calendar for Property ID: {test_property_id} ---")
+    calendar_id = find_or_create_calendar_by_property_id(service, test_property_id)
+    if not calendar_id:
+        logging.error(f"Failed to find or create calendar for {test_property_id}. Exiting.")
+        exit()
+    logging.info(f"Using Calendar ID: {calendar_id} for {test_property_id}.")
+
+    logging.info("\n--- Test 2: User Date Parsing ---")
+    user_start_date_input_str = "tomorrow"
+    parsed_user_start_date = parse_user_date_input(user_start_date_input_str, DEFAULT_USER_INPUT_TIMEZONE)
+    assert parsed_user_start_date, f"Failed to parse user date input: {user_start_date_input_str}"
+    logging.info(f"Parsed '{user_start_date_input_str}' to (user_tz): {parsed_user_start_date.isoformat()}")
+
+    specific_date_str = (datetime.now(DEFAULT_USER_INPUT_TIMEZONE) + timedelta(days=5)).strftime("%Y-%m-%d")
+    parsed_specific_date = parse_user_date_input(specific_date_str, DEFAULT_USER_INPUT_TIMEZONE)
+    assert parsed_specific_date, f"Failed to parse specific date input: {specific_date_str}"
+    logging.info(f"Parsed '{specific_date_str}' to (user_tz): {parsed_specific_date.isoformat()}")
+
+    booking_start_date_user_tz = parsed_specific_date
+    num_nights_test = 2
+    check_in_time_test_str = "3:00 PM"
+    check_out_time_test_str = "12:00 PM"
+
+    _parsed_check_in_time = dateparser.parse(check_in_time_test_str).time()
+    potential_start_dt_user_tz = booking_start_date_user_tz.replace(
+        hour=_parsed_check_in_time.hour, minute=_parsed_check_in_time.minute
+    )
+    _checkout_date_user_tz = (booking_start_date_user_tz.date() + timedelta(days=num_nights_test))
+    _parsed_check_out_time = dateparser.parse(check_out_time_test_str).time()
+    _potential_end_dt_naive = datetime.combine(_checkout_date_user_tz, _parsed_check_out_time)
+    potential_end_dt_user_tz = booking_start_date_user_tz.tzinfo.localize(_potential_end_dt_naive)
+
+    potential_start_dt_utc = potential_start_dt_user_tz.astimezone(pytz.utc)
+    potential_end_dt_utc = potential_end_dt_user_tz.astimezone(pytz.utc)
+
+    logging.info(f"Test booking START (UTC for availability): {potential_start_dt_utc.isoformat()}")
+    logging.info(f"Test booking END (UTC for availability): {potential_end_dt_utc.isoformat()}")
+
+    logging.info("\n--- Test 3: Check Calendar Availability (Initial) ---")
+    is_available = check_calendar_availability(service, calendar_id, potential_start_dt_utc, potential_end_dt_utc)
+    logging.info(f"Initial availability for {test_property_id}: {is_available}")
+    assert is_available, "Slot should be available initially."
+
+    if is_available:
+        logging.info("\n--- Test 4: Create Booking Event ---")
+        created_event = create_booking_event(
+            service, calendar_id, test_property_id,
+            booking_start_date_user_tz, num_nights_test,
+            "Test Client Name", "N/A",
+            check_in_time_str=check_in_time_test_str,
+            check_out_time_str=check_out_time_test_str
+        )
+        assert created_event, "Event creation failed."
+        logging.info(f"Created event: {created_event.get('htmlLink')}, ID: {created_event.get('id')}")
+        event_id_for_deletion = created_event.get('id')
+
+        logging.info("\n--- Test 5: Check Calendar Availability (After Booking) ---")
+        is_available_after = check_calendar_availability(service, calendar_id, potential_start_dt_utc, potential_end_dt_utc)
+        logging.info(f"Availability after booking: {is_available_after}")
+        assert not is_available_after, "Slot should NOT be available after booking."
+
+        logging.info("\n--- Test 6: Attempt to Create Overlapping Booking ---")
+        is_still_available_for_overlap = check_calendar_availability(
+            service, calendar_id, potential_start_dt_utc, potential_start_dt_utc + timedelta(days=1)
+        )
+        assert not is_still_available_for_overlap, "Overlap check failed."
+        logging.info("Correctly identified unavailability for overlapping event.")
+
+        try:
+            if event_id_for_deletion:
+                logging.info(f"Deleting test event {event_id_for_deletion}...")
+                service.events().delete(calendarId=calendar_id, eventId=event_id_for_deletion).execute()
+                logging.info(f"Deleted test event {event_id_for_deletion}.")
+        except Exception as e_del:
+            logging.error(f"Error deleting test event {event_id_for_deletion}: {e_del}")
+
+    # Optional: Delete test calendar (be cautious)
+    # try:
+    #     logging.info(f"\n--- Test 7: Deleting Test Calendar {test_property_id} ({calendar_id}) ---")
+    #     service.calendars().delete(calendarId=calendar_id).execute()
+    #     logging.info(f"Deleted test calendar {test_property_id}.")
+    # except Exception e_cal_del:
+    #     logging.error(f"Error deleting test calendar {test_property_id} ({calendar_id}): {e_cal_del}")
+
+    logging.info("\n--- Calendar Handler Tests Complete ---")
