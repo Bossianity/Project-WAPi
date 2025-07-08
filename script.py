@@ -611,13 +611,50 @@ def handle_new_messages():
                         return jsonify(status='success_interactive_reprompted_text_instead_of_button_for_furnished'), 200
 
                 elif current_step == 'awaiting_city_choice' and selected_row_id and selected_title:
-                    # ... (city selection logic as before) ...
-                    logging.info(f"User {sender} selected city: {selected_title}")
+                    logging.info(f"User {sender} selected city: {selected_title} (raw list item title)")
                     properties_df = get_sheet2_data()
-                    if properties_df.empty: send_whatsapp_message(sender, "عذراً، لم أتمكن من استرداد معلومات العقارات." if current_language == 'ar' else "Sorry, couldn't get property info."); return jsonify(status='error_fetching_sheet2_data'), 200
-                    city_properties = properties_df[properties_df['City'].str.lower() == selected_title.lower()]
-                    if city_properties.empty: send_whatsapp_message(sender, f"عذراً، لا توجد عقارات في {selected_title}." if current_language == 'ar' else f"Sorry, no properties in {selected_title}."); return jsonify(status='success_no_properties_in_city'), 200
-                    send_whatsapp_message(sender, f"ممتاز! وجدت {len(city_properties)} عقارات. جاري إرسالها..." if current_language == 'ar' else f"Great! Found {len(city_properties)} properties. Sending now...")
+
+                    if properties_df.empty:
+                        msg = "عذراً، لم أتمكن من استرداد معلومات العقارات حالياً. الرجاء المحاولة لاحقاً." if current_language == 'ar' else "Sorry, I couldn't retrieve property information at the moment. Please try again later."
+                        send_whatsapp_message(sender, msg)
+                        return jsonify(status='error_fetching_sheet2_data_empty_df'), 200
+
+                    if 'City' not in properties_df.columns:
+                        logging.error(f"CRITICAL: 'City' column not found in properties_df from get_sheet2_data(). Columns: {properties_df.columns.tolist()}")
+                        msg = "عذراً، هناك مشكلة في بيانات العقارات. سيتم إبلاغ الفريق الفني." if current_language == 'ar' else "Sorry, there's an issue with the property data. The technical team will be notified."
+                        send_whatsapp_message(sender, msg)
+                        return jsonify(status='error_missing_city_column_in_sheet2_data'), 200
+
+                    # Normalize selected_title from the interactive message (e.g., "Riyadh" -> "riyadh")
+                    normalized_selected_city_title = selected_title.strip().lower()
+                    logging.info(f"Normalized selected city for search: '{normalized_selected_city_title}'")
+
+                    # Log unique city names from the DataFrame for debugging
+                    unique_cities_in_df_lower = []
+                    if not properties_df['City'].empty:
+                        try:
+                            unique_cities_in_df_lower = properties_df['City'].astype(str).str.strip().str.lower().unique()
+                        except Exception as e:
+                            logging.error(f"Error converting 'City' column to string or getting unique values: {e}")
+                    logging.info(f"Unique 'City' values (lowercase, stripped) in Sheet2 data: {unique_cities_in_df_lower}")
+
+                    # Perform the filtering
+                    # Ensure case-insensitivity and strip whitespace from DataFrame 'City' column as well
+                    city_properties = properties_df[
+                        properties_df['City'].astype(str).str.strip().str.lower() == normalized_selected_city_title
+                    ]
+
+                    logging.info(f"Found {len(city_properties)} properties after filtering for city: '{normalized_selected_city_title}'")
+
+                    if city_properties.empty:
+                        no_props_msg_ar = f"عذراً، لا توجد عقارات متاحة حالياً في مدينة {selected_title}. يمكنك تجربة مدينة أخرى أو التحقق لاحقاً."
+                        no_props_msg_en = f"Sorry, there are currently no properties available in {selected_title}. You can try another city or check back later."
+                        send_whatsapp_message(sender, no_props_msg_ar if current_language == 'ar' else no_props_msg_en)
+                        # Optionally, you might want to reset the flow or offer other choices
+                        # For now, just informing the user.
+                        return jsonify(status='success_no_properties_found_in_selected_city'), 200
+
+                    send_whatsapp_message(sender, f"ممتاز! وجدت {len(city_properties)} عقارات في {selected_title}. جاري إرسالها..." if current_language == 'ar' else f"Great! Found {len(city_properties)} properties in {selected_title}. Sending now...")
                     time.sleep(1)
                     for _, prop in city_properties.iterrows():
                         prop_id = str(prop['PropertyID']).strip(); prop_name = str(prop['PropertyName']).strip()
@@ -707,18 +744,48 @@ def handle_new_messages():
                 elif current_sell_state == 'awaiting_seller_price': # Final state example
                     del sell_flow_states[sender]; continue
 
-            # --- Greeting check (if not in any flow and not a sell flow message) ---
+            # --- New Universal Greeting Logic ---
+            # If the user is not in any interactive flow and not in the sell flow,
+            # send the initial greeting. Language is already determined by detect_language.
+            # The default language from detect_language is 'en', but we want 'ar' as default for greeting.
             if not user_in_interactive_flow and not (sender in sell_flow_states) and body_for_fallback:
-                current_text_for_greeting_check = body_for_fallback.strip().lower() # Use body_for_fallback here
-                greetings = ["hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "مرحبا", "السلام عليكم", "هلا", "هاي"]
-                is_greeting = any(greet == current_text_for_greeting_check for greet in greetings if current_text_for_greeting_check) or \
-                              any(current_text_for_greeting_check.startswith(greet) for greet in greetings if current_text_for_greeting_check and len(greet) > 2)
-                if is_greeting:
-                    send_initial_greeting_message(sender, language=current_language)
-                    interactive_flow_states[sender] = {'step': 'awaiting_initial_choice', 'language': current_language}
-                    return jsonify(status='success_interactive_started'), 200
+                # current_language is already set based on detect_language
+                # If detect_language returns 'en' because it's an English word, use 'en'.
+                # Otherwise, default to 'ar'.
+                greeting_language = 'en' if current_language == 'en' else 'ar'
 
-            # --- Command Processing & RAG/LLM Fallback ---
+                # However, the requirement is: "DEFAULT TO THE ARABIC GREETING MESSAGE, unless the user sends an english word."
+                # detect_language returns 'ar' if Arabic characters are dominant, 'en' otherwise.
+                # So, if detect_language returns 'en', it means it's likely an English word (or non-Arabic).
+                # If it's 'ar', it's Arabic.
+                # The original current_language (derived from detect_language) should be mostly correct for this.
+                # If body_text_if_any is empty or just symbols, detect_language might default to 'en'.
+                # We need to ensure that only actual English *words* trigger English greeting.
+
+                # Let's refine the language choice for greeting:
+                # If the original detected language (current_language) is 'en', send English greeting.
+                # Otherwise (if it's 'ar' or if detect_language couldn't make a clear distinction and defaulted), send Arabic.
+                # The `detect_language` function returns 'en' if it's not clearly Arabic.
+                # So, if `body_text_if_any` is a fullstop ".", `detect_language` returns 'en'.
+                # We need a more specific check for "is it an English word?"
+
+                is_english_word = False
+                if current_language == 'en' and body_text_if_any:
+                    # A simple check: does it contain at least one English letter?
+                    if re.search(r'[a-zA-Z]', body_text_if_any):
+                        is_english_word = True
+
+                final_greeting_language = 'en' if is_english_word else 'ar'
+
+                logging.info(f"Sending universal initial greeting to {sender}. Original detected lang: {current_language}, Greeting lang: {final_greeting_language}, Message: '{body_text_if_any}'")
+                send_initial_greeting_message(sender, language=final_greeting_language)
+                interactive_flow_states[sender] = {'step': 'awaiting_initial_choice', 'language': final_greeting_language}
+                # Update user_languages state to reflect the language of the sent greeting,
+                # as this will be the language for subsequent interactions in this flow.
+                user_languages[sender] = final_greeting_language
+                return jsonify(status='success_interactive_started_universally'), 200
+
+            # --- Command Processing & RAG/LLM Fallback (only if not handled by universal greeting) ---
             if not (sender and body_for_fallback): continue # Redundant check, but safe
 
             normalized_body = body_for_fallback.lower().strip()
