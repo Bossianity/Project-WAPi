@@ -96,26 +96,26 @@ PROPERTY_SHEET_NAME = os.getenv('PROPERTY_SHEET_NAME', 'Properties')
 is_globally_paused = False
 paused_conversations = set()
 
-PERSONA_FILE = 'persona.json'
-PERSONA_NAME = "mosaed (مساعد)"
+PERSONA_FILE = 'persona.json' # This file is loaded but its content seems not directly used for the new prompt logic.
+# PERSONA_NAME = "mosaed (مساعد)" # Old variable, effectively replaced by dynamic persona setting.
 
-BASE_PROMPT_TEMPLATE = (
-    "You are a helpful and friendly assistant from Al-Ouja Property Management (شركة عوجا لإدارة الأملاك). "
-    "Your primary goal is to guide users through options using interactive messages. "
-    "Your tone is polite, professional, and uses a Saudi dialect when the user communicates in Arabic. "
+# This is the core content of the persona, name/company will be prefixed in get_llm_response
+BASE_PROMPT_TEMPLATE_CONTENT = (
+    "Your primary role is to expertly guide users through options using interactive messages. "
+    "Your tone is polite, professional, and you should use a Saudi dialect when the user communicates in Arabic (if you are replying in Arabic). "
     "CRITICAL LANGUAGE RULE: Your response MUST ALWAYS be in the SAME language as the user's last message. If the user messages in English, you reply in English. If they message in Arabic, you MUST reply in Saudi dialect. "
-    "If providing information directly (not via interactive message), keep it concise. "
-    "If a user asks a question that can be answered by one of the interactive flow options, try to steer them towards that flow. "
-    "If the query is not covered by an interactive flow, use the provided 'Relevant Information Found' to answer. "
+    "If providing information directly (when not using an interactive message), keep it concise. "
+    "If a user asks a question that can be answered by one of the interactive flow options, gently steer them towards that flow. "
+    "If the query is not covered by an interactive flow, use any 'Relevant Information Found' to answer. "
     "If the context does not sufficiently answer the query, state that you will check for that specific detail and get back to them, appending `[ACTION_NOTIFY_UNANSWERED_QUERY]`. "
-    "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. "
+    "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only."
 )
 try:
     with open(PERSONA_FILE) as f:
         p = json.load(f)
-    logging.info(f"Original persona name from {PERSONA_FILE} was '{p.get('name')}'. Script now uses dynamic naming ('Mosaed'/'مساعد') for LLM prompts based on BASE_PROMPT_TEMPLATE.")
+    logging.info(f"Persona file {PERSONA_FILE} loaded, but bot name and core instructions are now primarily set directly in script.py (Barq/برق). Original name in file was '{p.get('name')}'.")
 except Exception as e:
-    logging.warning(f"Could not load {PERSONA_FILE} or parse it: {e}. Using dynamic naming ('Mosaed'/'مساعد') for LLM prompts based on BASE_PROMPT_TEMPLATE.")
+    logging.warning(f"Could not load {PERSONA_FILE} or parse it: {e}. Bot name and core instructions are set in script.py.")
 
 AI_MODEL = None
 if OPENAI_API_KEY:
@@ -358,10 +358,19 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
         if vector_store:
             retrieved_docs = query_vector_store(text, vector_store, k=3)
             if retrieved_docs: context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
-    current_language = user_languages.get(sender_id, 'ar')
-    effective_persona_name = "مساعد" if current_language == 'ar' else "Mosaed"
-    system_prompt_content = (f"You are {effective_persona_name}. " + BASE_PROMPT_TEMPLATE)
+
+    current_language = user_languages.get(sender_id, 'ar') # Default to 'ar' if not set for some reason
+
+    # Construct persona intro with new name "Barq"
+    if current_language == 'ar':
+        persona_intro = "أنت برق، مساعد ودود. "
+    else:
+        persona_intro = "You are Barq, a friendly assistant. "
+
+    # BASE_PROMPT_TEMPLATE_CONTENT is now the global constant for the main instructions
+    system_prompt_content = persona_intro + BASE_PROMPT_TEMPLATE_CONTENT
     messages = [SystemMessage(content=system_prompt_content)]
+
     if history_dicts:
         for item in history_dicts: messages.append(HumanMessage(content=item['parts'][0]) if item['role'] == 'user' else AIMessage(content=item['parts'][0]))
     messages.append(HumanMessage(content=(context_str + f"\n\nUser Question: {text}" if context_str else text)))

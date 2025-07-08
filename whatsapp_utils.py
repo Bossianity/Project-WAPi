@@ -308,19 +308,19 @@ def _get_translated_text(key_path, language, text_map, default_value=None):
 
 initial_greeting_text_map = {
     'ar': {
-        'header': "هلا ! أنا مساعد من شركة عوجا لإدارة الأملاك",
-        'body': "كيف ممكن أخدمك اليوم؟",
-        'footer': "أضغط لتختار:",
+        'header': "مرحباً! أنا برق.",
+        'body': "كيف يمكنني خدمتك اليوم؟",
+        'footer': "اختر من الخيارات:",
         'buttons': [
-            {'id': 'button_id1', 'title': "أملك شقة حابي أشغلها", 'type': 'quick_reply'},
-            {'id': 'button_id2', 'title': "ابي أستاجر شقة", 'type': 'quick_reply'},
-            {'id': 'button_id3', 'title': "أستفسارات أخرى", 'type': 'quick_reply'}
+            {'id': 'button_id1', 'title': "أملك شقة وأرغب في تشغيلها", 'type': 'quick_reply'},
+            {'id': 'button_id2', 'title': "أرغب في استئجار شقة", 'type': 'quick_reply'},
+            {'id': 'button_id3', 'title': "استفسارات أخرى", 'type': 'quick_reply'}
         ]
     },
     'en': {
-        'header': "Hello! I am an assistant from Al Awja Property Management.",
+        'header': "Hello! I'm Barq.",
         'body': "How can I help you today?",
-        'footer': "Click to choose:",
+        'footer': "Choose an option:",
         'buttons': [
             {'id': 'button_id1', 'title': "I own an apartment and want to operate it", 'type': 'quick_reply'},
             {'id': 'button_id2', 'title': "I want to rent an apartment", 'type': 'quick_reply'},
