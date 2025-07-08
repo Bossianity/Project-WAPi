@@ -626,25 +626,51 @@ def handle_new_messages():
                         return jsonify(status='error_missing_city_column_in_sheet2_data'), 200
 
                     # Normalize selected_title from the interactive message (e.g., "Riyadh" -> "riyadh")
-                    normalized_selected_city_title = selected_title.strip().lower()
-                    logging.info(f"Normalized selected city for search: '{normalized_selected_city_title}'")
+                    # The 'id' from the list message is more reliable and already normalized (e.g., "riyadh")
+                    # 'selected_row_id' corresponds to the 'id' from city_selection_text_map
+                    normalized_selected_city_id = selected_row_id.strip().lower()
+                    logging.info(f"Normalized selected city ID for search: '{normalized_selected_city_id}' (using selected_row_id)")
+                    logging.info(f"Original selected_title from user: '{selected_title}'")
+
 
                     # Log unique city names from the DataFrame for debugging
-                    unique_cities_in_df_lower = []
+                    unique_cities_in_df_processed = []
                     if not properties_df['City'].empty:
                         try:
-                            unique_cities_in_df_lower = properties_df['City'].astype(str).str.strip().str.lower().unique()
+                            # For Arabic, .lower() might not be as impactful but good for consistency if English names are present
+                            unique_cities_in_df_processed = properties_df['City'].astype(str).str.strip().str.lower().unique()
                         except Exception as e:
-                            logging.error(f"Error converting 'City' column to string or getting unique values: {e}")
-                    logging.info(f"Unique 'City' values (lowercase, stripped) in Sheet2 data: {unique_cities_in_df_lower}")
+                            logging.error(f"Error processing 'City' column for unique values: {e}")
+                    logging.info(f"Unique 'City' values (processed) in Sheet2 data: {unique_cities_in_df_processed}")
 
-                    # Perform the filtering
-                    # Ensure case-insensitivity and strip whitespace from DataFrame 'City' column as well
-                    city_properties = properties_df[
-                        properties_df['City'].astype(str).str.strip().str.lower() == normalized_selected_city_title
-                    ]
+                    city_properties = pd.DataFrame() # Initialize empty DataFrame
 
-                    logging.info(f"Found {len(city_properties)} properties after filtering for city: '{normalized_selected_city_title}'")
+                    if current_language == 'en':
+                        arabic_variants_to_search = EN_TO_AR_CITY_MAP.get(normalized_selected_city_id)
+                        if arabic_variants_to_search:
+                            logging.info(f"English flow: Mapping '{normalized_selected_city_id}' to Arabic variants: {arabic_variants_to_search}")
+                            # Normalize variants before searching (e.g. lowercase, strip)
+                            normalized_arabic_variants = [v.strip().lower() for v in arabic_variants_to_search]
+                            city_properties = properties_df[
+                                properties_df['City'].astype(str).str.strip().str.lower().isin(normalized_arabic_variants)
+                            ]
+                            logging.info(f"Found {len(city_properties)} properties after filtering for Arabic variants: {normalized_arabic_variants}")
+                        else:
+                            # Fallback: if no mapping, search for the English ID directly (e.g. if sheet has English city names)
+                            logging.warning(f"No Arabic mapping found for English city ID '{normalized_selected_city_id}'. Searching for it directly.")
+                            city_properties = properties_df[
+                                properties_df['City'].astype(str).str.strip().str.lower() == normalized_selected_city_id
+                            ]
+                            logging.info(f"Found {len(city_properties)} properties after direct search for '{normalized_selected_city_id}'")
+                    else: # Arabic flow
+                        # For Arabic flow, selected_title is the Arabic city name.
+                        # selected_row_id is the English equivalent id, so use selected_title here.
+                        normalized_arabic_city_title = selected_title.strip().lower() # Lowercasing Arabic might not change much but is consistent
+                        logging.info(f"Arabic flow: Searching directly for '{normalized_arabic_city_title}' (from selected_title)")
+                        city_properties = properties_df[
+                            properties_df['City'].astype(str).str.strip().str.lower() == normalized_arabic_city_title
+                        ]
+                        logging.info(f"Found {len(city_properties)} properties after filtering for city: '{normalized_arabic_city_title}'")
 
                     if city_properties.empty:
                         no_props_msg_ar = f"عذراً، لا توجد عقارات متاحة حالياً في مدينة {selected_title}. يمكنك تجربة مدينة أخرى أو التحقق لاحقاً."
