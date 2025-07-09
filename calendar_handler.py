@@ -12,24 +12,59 @@ EVENT_STORAGE_TIMEZONE = pytz.timezone('America/New_York')
 DEFAULT_USER_INPUT_TIMEZONE_STR = os.getenv('DEFAULT_USER_TIMEZONE', 'Asia/Dubai')
 DEFAULT_USER_INPUT_TIMEZONE = pytz.timezone(DEFAULT_USER_INPUT_TIMEZONE_STR)
 
-CREDENTIALS_PATH = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+# CREDENTIALS_PATH = os.getenv('GOOGLE_APPLICATION_CREDENTIALS') # Keep for clarity but logic below uses it directly
 
 def get_calendar_service():
-    """Initialize and return the Google Calendar API service."""
-    try:
-        if not CREDENTIALS_PATH:
-            logging.error("Error: GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
-            return None
+    """
+    Initialize and return the Google Calendar API service.
+    Handles GOOGLE_APPLICATION_CREDENTIALS as either a file path or JSON content.
+    """
+    credentials_env_var = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if not credentials_env_var:
+        logging.error("Error: GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
+        return None
 
-        credentials = service_account.Credentials.from_service_account_file(
-            CREDENTIALS_PATH,
-            scopes=['https://www.googleapis.com/auth/calendar']
-        )
+    credentials = None
+    scopes = ['https://www.googleapis.com/auth/calendar']
+
+    try:
+        # Attempt to load as a file path first
+        if os.path.isfile(credentials_env_var):
+            credentials = service_account.Credentials.from_service_account_file(
+                credentials_env_var, scopes=scopes
+            )
+            logging.info("Initialized calendar service credentials from file path.")
+        else:
+            # If not a file, attempt to load as JSON content
+            logging.info("GOOGLE_APPLICATION_CREDENTIALS is not a file path. Attempting to parse as JSON content.")
+            try:
+                credentials_info = json.loads(credentials_env_var)
+                credentials = service_account.Credentials.from_service_account_info(
+                    credentials_info, scopes=scopes
+                )
+                logging.info("Initialized calendar service credentials from JSON content in environment variable.")
+            except json.JSONDecodeError as json_err:
+                logging.error(f"Failed to parse GOOGLE_APPLICATION_CREDENTIALS as JSON: {json_err}. Ensure it's either a valid file path or JSON string.")
+                return None
+            except Exception as info_err: # Catch other potential errors from from_service_account_info
+                logging.error(f"Error loading credentials from_service_account_info: {info_err}", exc_info=True)
+                return None
+
+        if not credentials:
+             logging.error("Failed to load credentials using any method.")
+             return None
+
         service = build('calendar', 'v3', credentials=credentials)
         logging.info("Google Calendar service initialized successfully.")
         return service
+
+    except FileNotFoundError:
+        # This specific exception might be caught if it was treated as a path initially but then failed json.loads too.
+        # The more specific logging above should cover it.
+        logging.error(f"FileNotFoundError: GOOGLE_APPLICATION_CREDENTIALS path '{credentials_env_var}' not found, and it's not valid JSON content either.")
+        return None
     except Exception as e:
-        logging.error(f"Error initializing calendar service: {e}", exc_info=True)
+        logging.error(f"Unexpected error initializing calendar service: {e}", exc_info=True)
         return None
 
 def find_or_create_calendar_by_property_id(service, property_id):
