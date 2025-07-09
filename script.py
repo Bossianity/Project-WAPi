@@ -20,6 +20,7 @@ import pytz
 import smtplib
 from email.mime.text import MIMEText
 import property_handler
+import dateparser
 
 # Ensure rag_handler.py is in the same directory or accessible via PYTHONPATH
 from rag_handler import (

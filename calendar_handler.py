@@ -93,8 +93,29 @@ def find_or_create_calendar_by_property_id(service, property_id):
             'timeZone': EVENT_STORAGE_TIMEZONE.zone
         }
         created_calendar = service.calendars().insert(body=calendar_body).execute()
-        logging.info(f"Created new calendar for property ID '{property_id}': {created_calendar['id']}")
-        return created_calendar['id']
+        new_calendar_id = created_calendar['id']
+        logging.info(f"Created new calendar for property ID '{property_id}': {new_calendar_id}")
+
+        # Share the newly created calendar with the target email
+        share_email = os.getenv('OWNER_CALENDAR_EMAIL_SHARE_TARGET')
+        if share_email:
+            rule = {
+                'scope': {
+                    'type': 'user',
+                    'value': share_email,
+                },
+                'role': 'owner' # Grant owner role
+            }
+            try:
+                service.acl().insert(calendarId=new_calendar_id, body=rule, sendNotifications=False).execute() # sendNotifications=False to avoid email spam during testing/setup
+                logging.info(f"Successfully shared calendar '{new_calendar_id}' with '{share_email}' as 'owner'.")
+            except Exception as acl_err:
+                logging.error(f"Error sharing calendar '{new_calendar_id}' with '{share_email}': {acl_err}", exc_info=True)
+                # Continue even if sharing fails, calendar is still created.
+        else:
+            logging.warning("OWNER_CALENDAR_EMAIL_SHARE_TARGET environment variable not set. New calendar will not be automatically shared.")
+
+        return new_calendar_id
     except Exception as e:
         logging.error(f"Error finding or creating calendar for property ID '{property_id}': {e}", exc_info=True)
         return None
