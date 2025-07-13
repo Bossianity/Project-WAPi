@@ -141,7 +141,9 @@ SHEET2_COLUMNS = [
     'MonthlyPrice', 'Guests', 'City', 'Neighborhood', 'Amenities',
     'BookingLink', 'VideoURL', 'ImageURL1', 'ImageURL2', 'ImageURL3',
     'ImageURL4', 'ImageURL5', 'ImageURL6', 'ImageURL7', 'ImageURL8',
-    'ImageURL9', 'ImageURL10', 'PropertyName_en', 'Description_en'
+    'ImageURL9', 'ImageURL10', 'PropertyName_en', 'Description_en',
+    'ImageCaption1_en', 'ImageCaption2_en', 'ImageCaption3_en', 'ImageCaption4_en', 'ImageCaption5_en',
+    'ImageCaption6_en', 'ImageCaption7_en', 'ImageCaption8_en', 'ImageCaption9_en', 'ImageCaption10_en'
 ]
 
 def get_sheet2_data():
