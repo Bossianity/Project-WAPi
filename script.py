@@ -295,16 +295,28 @@ def webhook_google_sync():
 
 
 def _handle_show_photos(sender, prop_details, current_language):
-    prop_name = prop_details.get('PropertyName', 'this property')
+    if current_language == 'en':
+        prop_name = prop_details.get('PropertyName_en', prop_details.get('PropertyName', 'this property'))
+    else:
+        prop_name = prop_details.get('PropertyName', 'this property')
+
     logging.info(f"Executing _handle_show_photos for PropertyName: {prop_name} for user {sender}")
     image_urls = []
     for i in range(1, 11):
         img_col = f'ImageURL{i}'
         url_val = prop_details.get(img_col)
-        caption_col = f'ImageCaption{i}' # Assuming captions might exist
-        caption_val = prop_details.get(caption_col)
-        if not caption_val or str(caption_val).strip() == "":
-             caption_val = f"{prop_name} - Image {i}" if current_language == 'en' else f"{prop_name} - صورة {i}"
+
+        # Caption logic based on language
+        if current_language == 'en':
+            caption_col = f'ImageCaption{i}_en'
+            caption_val = prop_details.get(caption_col)
+            if not caption_val or str(caption_val).strip() == "":
+                caption_val = f"{prop_name} - Image {i}"
+        else:
+            caption_col = f'ImageCaption{i}'
+            caption_val = prop_details.get(caption_col)
+            if not caption_val or str(caption_val).strip() == "":
+                caption_val = f"{prop_name} - صورة {i}"
 
         if url_val and isinstance(url_val, str) and url_val.startswith('http'):
             image_urls.append({'url': url_val, 'caption': str(caption_val)})
@@ -642,11 +654,18 @@ def handle_new_messages():
                     send_whatsapp_message(sender, f"ممتاز! وجدت {len(city_properties)} عقارات. جاري إرسالها..." if current_language == 'ar' else f"Great! Found {len(city_properties)} properties. Sending now...")
                     time.sleep(1)
                     for _, prop in city_properties.iterrows():
-                        prop_id_card = str(prop['PropertyID']).strip(); prop_name_card = str(prop['PropertyName']).strip()
+                        prop_id_card = str(prop['PropertyID']).strip()
+                        if current_language == 'en':
+                            prop_name_card = str(prop.get('PropertyName_en') or prop['PropertyName']).strip()
+                            prop_description = str(prop.get('Description_en') or prop.get('Description', '')).strip()
+                        else:
+                            prop_name_card = str(prop['PropertyName']).strip()
+                            prop_description = str(prop.get('Description', '')).strip()
+
                         buttons = [{"type": "quick_reply", "title": "عرض الصور" if current_language == 'ar' else "Show Photos", "id": f"show_photos_{prop_id_card}"},
                                    {"type": "quick_reply", "title": "الأسعار" if current_language == 'ar' else "Prices", "id": f"show_prices_{prop_id_card}"},
                                    {"type": "quick_reply", "title": "إحجز" if current_language == 'ar' else "Book", "id": f"book_prop_{prop_id_card}"}]
-                        msg_data = {'header': prop_name_card, 'body': str(prop.get('Description','')), 'footer': "إضغط للإختيار" if current_language=='ar' else "Choose", 'buttons': buttons}
+                        msg_data = {'header': prop_name_card, 'body': prop_description, 'footer': "إضغط للإختيار" if current_language=='ar' else "Choose", 'buttons': buttons}
                         send_interactive_button_message(sender, msg_data)
                         time.sleep(1.5) # Stagger messages
                     interactive_flow_states[sender]['step'] = f'awaiting_property_action_{selected_title.lower().replace(" ", "_")}'
