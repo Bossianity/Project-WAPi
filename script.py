@@ -249,7 +249,7 @@ def get_llm_response(text, sender_id, history_dicts=None, retries=3):
             retrieved_docs = query_vector_store(text, vector_store, k=3)
             if retrieved_docs: context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
     current_language = user_languages.get(sender_id, 'ar')
-    effective_persona_name = "مساعد" if current_language == 'ar' else "Mosaed"
+    effective_persona_name = "برق" if current_language == 'ar' else "Barq"
     system_prompt_content = (f"You are {effective_persona_name}. " + BASE_PROMPT_TEMPLATE)
     messages = [SystemMessage(content=system_prompt_content)]
     if history_dicts:
