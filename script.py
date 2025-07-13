@@ -422,23 +422,47 @@ def handle_new_messages():
                     # ... (text handling during property action as before)
                     pass # Assuming this logic is correct from previous steps
 
-                elif current_step == 'awaiting_initial_choice' and button_id:
-                    if button_id == 'button_id1' or button_id.endswith(':button_id1'):
+                elif current_step == 'awaiting_initial_choice':
+                    # Keywords for each option
+                    rent_keywords_ar = ["استاجر", "أستاجر", "استئجار", "إستئجار", "اجار", "إيجار", "ابي استاجر", "ابي أستأجر"]
+                    rent_keywords_en = ["rent", "lease", "i want to rent"]
+                    operate_keywords_ar = ["اشغلها", "أشغلها", "تشغيل", "امل", "أملك"]
+                    operate_keywords_en = ["operate", "i own", "run my apartment"]
+                    other_keywords_ar = ["اخرى", "أخرى", "استفسار", "سؤال"]
+                    other_keywords_en = ["other", "inquiries", "question", "query"]
+
+                    # Combine all keywords for the current language
+                    rent_keywords = rent_keywords_ar if current_language == 'ar' else rent_keywords_en
+                    operate_keywords = operate_keywords_ar if current_language == 'ar' else operate_keywords_en
+                    other_keywords = other_keywords_ar if current_language == 'ar' else other_keywords_en
+
+                    action = None
+                    if button_id:
+                        if button_id == 'button_id1' or button_id.endswith(':button_id1'): action = 'operate'
+                        elif button_id == 'button_id2' or button_id.endswith(':button_id2'): action = 'rent'
+                        elif button_id == 'button_id3' or button_id.endswith(':button_id3'): action = 'other'
+                    elif msg_type == 'text' and body_text_if_any:
+                        text_lower = body_text_if_any.lower().strip()
+                        if any(keyword in text_lower for keyword in operate_keywords): action = 'operate'
+                        elif any(keyword in text_lower for keyword in rent_keywords): action = 'rent'
+                        elif any(keyword in text_lower for keyword in other_keywords): action = 'other'
+
+                    if action == 'operate':
                         send_furnished_query_message(sender, language=current_language)
                         interactive_flow_states[sender]['step'] = 'awaiting_furnished_choice'
                         return jsonify(status='success_interactive_handled'), 200
-                    elif button_id == 'button_id2' or button_id.endswith(':button_id2'):
+                    elif action == 'rent':
                         send_city_selection_message(sender, language=current_language)
                         interactive_flow_states[sender]['step'] = 'awaiting_city_choice'
                         return jsonify(status='success_interactive_handled'), 200
-                    elif button_id == 'button_id3' or button_id.endswith(':button_id3'):
+                    elif action == 'other':
                         send_whatsapp_message(sender, "الرجاء كتابة سؤالك، وسأبذل قصارى جهدي لمساعدتك." if current_language == 'ar' else "Please type your question.");
                         if sender in interactive_flow_states: del interactive_flow_states[sender]
                         body_for_fallback = "User selected 'Other inquiries' and will type their question."
-                    else:
+                    else: # If no button, no text match, or unknown button ID
                         send_initial_greeting_message(sender, language=current_language)
                         interactive_flow_states[sender]['step'] = 'awaiting_initial_choice'
-                        return jsonify(status='success_interactive_reprompted_unknown_button'), 200
+                        return jsonify(status='success_interactive_reprompted_unknown_input'), 200
 
                 elif current_step == 'awaiting_furnished_choice':
                     if button_id:
@@ -673,21 +697,74 @@ def handle_new_messages():
                     send_whatsapp_message(sender, "الرجاء اختيار أحد الخيارات من العقارات أعلاه." if current_language == 'ar' else "Please choose an option from the properties above.")
                     return jsonify(status='success_sent_property_cards'), 200
 
-                elif current_step and current_step.startswith('awaiting_property_action_') and button_id:
-                    cleaned_button_id = button_id.replace("ButtonsV3:", "") if button_id.startswith("ButtonsV3:") else button_id
-                    action_parts = cleaned_button_id.split('_'); action_type = ""; action_subject = ""; prop_id_from_button = ""
-                    if len(action_parts) >= 3: action_type, action_subject, *prop_id_parts = action_parts; prop_id_from_button = "_".join(prop_id_parts)
-                    if not prop_id_from_button: send_whatsapp_message(sender, "Error processing selection."); return jsonify(status='error_parsing_prop_id'), 200
-                    properties_df = get_sheet2_data()
-                    if properties_df.empty: send_whatsapp_message(sender, "Error fetching details."); return jsonify(status='error_fetching_sheet2_for_action'), 200
-                    selected_property = properties_df[properties_df['PropertyID'] == prop_id_from_button]
-                    if selected_property.empty: send_whatsapp_message(sender, "Property details not found."); return jsonify(status='error_prop_not_found_for_action'), 200
-                    prop_details = selected_property.iloc[0]
-                    if sender in interactive_flow_states: interactive_flow_states[sender]['last_interacted_prop_id'] = prop_id_from_button
-                    if action_type == "show" and action_subject == "photos": _handle_show_photos(sender, prop_details, current_language); return jsonify(status='success_called_show_photos'), 200
-                    elif action_type == "show" and action_subject == "prices": _handle_show_prices(sender, prop_details, current_language); return jsonify(status='success_called_show_prices'), 200
-                    elif action_type == "book" and action_subject == "prop": _handle_book_property(sender, prop_details, current_language); return jsonify(status='success_called_book_property'), 200
-                    else: send_whatsapp_message(sender, "Sorry, unknown option."); return jsonify(status='error_unknown_property_action'), 200
+                elif current_step and current_step.startswith('awaiting_property_action_'):
+                    action_type = None; prop_id_to_use = None
+
+                    # Case 1: User clicks a button
+                    if button_id:
+                        cleaned_button_id = button_id.replace("ButtonsV3:", "") if button_id.startswith("ButtonsV3:") else button_id
+                        action_parts = cleaned_button_id.split('_')
+                        if len(action_parts) >= 3:
+                            action, subject, *prop_id_parts = action_parts
+                            prop_id_to_use = "_".join(prop_id_parts)
+                            if action == "show" and subject == "photos": action_type = "photos"
+                            elif action == "show" and subject == "prices": action_type = "prices"
+                            elif action == "book" and subject == "prop": action_type = "book"
+                            if action_type:
+                                # Store the property ID from the button click as the last interacted
+                                interactive_flow_states[sender]['last_interacted_prop_id'] = prop_id_to_use
+                        else:
+                            send_whatsapp_message(sender, "Error processing selection."); return jsonify(status='error_parsing_prop_id'), 200
+
+                    # Case 2: User types a text command
+                    elif msg_type == 'text' and body_text_if_any:
+                        text_lower = body_text_if_any.lower().strip()
+                        # Keywords for text commands
+                        photos_keywords = ["photos", "images", "pics", "صور"]
+                        prices_keywords = ["prices", "price", "cost", "أسعار", "سعر", "اسعار"]
+                        book_keywords = ["book", "booking", "reserve", "حجز", "إحجز", "احجز"]
+
+                        if any(keyword in text_lower for keyword in photos_keywords): action_type = "photos"
+                        elif any(keyword in text_lower for keyword in prices_keywords): action_type = "prices"
+                        elif any(keyword in text_lower for keyword in book_keywords): action_type = "book"
+
+                        if action_type:
+                            prop_id_to_use = interactive_flow_states[sender].get('last_interacted_prop_id')
+                            if not prop_id_to_use:
+                                no_prop_msg = "Please select a property first by clicking one of its buttons."
+                                if current_language == 'ar': no_prop_msg = "الرجاء تحديد عقار أولاً بالضغط على أحد أزراره."
+                                send_whatsapp_message(sender, no_prop_msg)
+                                return jsonify(status='success_reprompted_no_prop_selected_for_text_command'), 200
+
+                    # Execute the action if one was determined
+                    if action_type and prop_id_to_use:
+                        properties_df = get_sheet2_data()
+                        if properties_df.empty:
+                            send_whatsapp_message(sender, "Error fetching details."); return jsonify(status='error_fetching_sheet2_for_action'), 200
+
+                        selected_property = properties_df[properties_df['PropertyID'] == prop_id_to_use]
+                        if selected_property.empty:
+                            send_whatsapp_message(sender, "Property details not found."); return jsonify(status='error_prop_not_found_for_action'), 200
+
+                        prop_details = selected_property.iloc[0].to_dict()
+
+                        if action_type == "photos":
+                            _handle_show_photos(sender, prop_details, current_language)
+                            return jsonify(status='success_called_show_photos'), 200
+                        elif action_type == "prices":
+                            _handle_show_prices(sender, prop_details, current_language)
+                            return jsonify(status='success_called_show_prices'), 200
+                        elif action_type == "book":
+                            _handle_book_property(sender, prop_details, current_language)
+                            return jsonify(status='success_called_book_property'), 200
+
+                    # If it's a text message that doesn't match any command, it might be a general question.
+                    # We can either ignore it, reprompt, or pass to LLM. For now, let's reprompt.
+                    elif msg_type == 'text' and body_text_if_any:
+                         reprompt_msg = "Please choose an option from the buttons, or type 'prices', 'photos', or 'book' for the last property you selected."
+                         if current_language == 'ar': reprompt_msg = "الرجاء اختيار أحد الخيارات من الأزرار، أو اكتب 'الأسعار' أو 'الصور' أو 'الحجز' لآخر عقار قمت بتحديده."
+                         send_whatsapp_message(sender, reprompt_msg)
+                         return jsonify(status='success_reprompted_unhandled_text_in_prop_action'), 200
 
                 elif msg_type == 'text' and body_text_if_any:
                     logging.info(f"User {sender} in step {current_step} sent unhandled text: '{body_text_if_any}'. Reprompting.")
