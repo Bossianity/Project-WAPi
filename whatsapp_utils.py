@@ -1,3 +1,4 @@
+
 import os
 import json
 import time
@@ -308,7 +309,7 @@ def _get_translated_text(key_path, language, text_map, default_value=None):
 
 initial_greeting_text_map = {
     'ar': {
-        'header': "هلا ! أنا مساعد من شركة عوجا لإدارة الأملاك",
+        'header': "هلا! أنا برق، مساعدك الإلكتروني. ",
         'body': "كيف ممكن أخدمك اليوم؟",
         'footer': "أضغط لتختار:",
         'buttons': [
@@ -318,11 +319,11 @@ initial_greeting_text_map = {
         ]
     },
     'en': {
-        'header': "Hello! I am an assistant from Al Awja Property Management.",
+        'header': "Hello! I am Barq, your virtual assisstant.",
         'body': "How can I help you today?",
         'footer': "Click to choose:",
         'buttons': [
-            {'id': 'button_id1', 'title': "I own an apartment and want to operate it", 'type': 'quick_reply'},
+            {'id': 'button_id1', 'title': "I own an apartment and want to lease it", 'type': 'quick_reply'},
             {'id': 'button_id2', 'title': "I want to rent an apartment", 'type': 'quick_reply'},
             {'id': 'button_id3', 'title': "Other inquiries", 'type': 'quick_reply'}
         ]
