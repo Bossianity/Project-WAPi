@@ -4,6 +4,7 @@ import gspread
 import pandas as pd
 import logging
 import re # Import regex module
+from googletrans import Translator
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- Configuration ---
@@ -136,14 +137,34 @@ def filter_properties(df, filters):
     logging.info(f"Filtering completed. Found {len(filtered_df)} matching properties.")
     return filtered_df
 
+
+def translate_if_not_english(text: str, translator: Translator) -> str:
+    """
+    Translates text to English if it's not already in English.
+    """
+    if not text or not isinstance(text, str):
+        return ""  # Return empty string if input is not a valid string
+
+    try:
+        # Detect the language of the text
+        detected_lang = translator.detect(text).lang
+
+        # If the detected language is not English, translate it
+        if detected_lang != 'en':
+            return translator.translate(text, src=detected_lang, dest='en').text
+        else:
+            return text  # Return original text if it's already in English
+    except Exception as e:
+        logging.error(f"Error during translation for text: '{text[:30]}...': {e}")
+        return text # Return original text in case of an error
+
+
 SHEET2_COLUMNS = [
     'PropertyID', 'PropertyName', 'Description', 'WeekdayPrice', 'WeekendPrice',
     'MonthlyPrice', 'Guests', 'City', 'Neighborhood', 'Amenities',
     'BookingLink', 'VideoURL', 'ImageURL1', 'ImageURL2', 'ImageURL3',
     'ImageURL4', 'ImageURL5', 'ImageURL6', 'ImageURL7', 'ImageURL8',
-    'ImageURL9', 'ImageURL10', 'PropertyName_en', 'Description_en',
-    'ImageCaption1_en', 'ImageCaption2_en', 'ImageCaption3_en', 'ImageCaption4_en', 'ImageCaption5_en',
-    'ImageCaption6_en', 'ImageCaption7_en', 'ImageCaption8_en', 'ImageCaption9_en', 'ImageCaption10_en'
+    'ImageURL9', 'ImageURL10',
 ]
 
 def get_sheet2_data():
@@ -181,6 +202,13 @@ def get_sheet2_data():
 
         df = pd.DataFrame(records)
         logging.info(f"Initial load from '{sheet_name}': {len(df)} records, columns: {df.columns.tolist()}")
+
+        translator = Translator()
+
+        # Translate columns if they are not in English
+        for col_to_translate in ['PropertyName', 'Description']:
+            if col_to_translate in df.columns:
+                df[col_to_translate] = df[col_to_translate].apply(lambda x: translate_if_not_english(x, translator))
 
         for col in SHEET2_COLUMNS:
             if col not in df.columns:
