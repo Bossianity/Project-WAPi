@@ -97,9 +97,9 @@ is_globally_paused = False
 paused_conversations = set()
 
 PERSONA_FILE = 'persona.json'
-PERSONA_NAME = "mosaed (مساعد)"
+PERSONA_NAME = "Barq (برق)"
 BASE_PROMPT_TEMPLATE = (
-    "You are a helpful and friendly assistant from Al-Ouja Property Management (شركة عوجا لإدارة الأملاك). "
+    "You are a helpful and friendly assistant from X-BnB. "
     "Your primary goal is to guide users through options using interactive messages. "
     "Your tone is polite, professional, and uses a Saudi dialect when the user communicates in Arabic. "
     "CRITICAL LANGUAGE RULE: Your response MUST ALWAYS be in the SAME language as the user's last message. If the user messages in English, you reply in English. If they message in Arabic, you MUST reply in Saudi dialect. "
