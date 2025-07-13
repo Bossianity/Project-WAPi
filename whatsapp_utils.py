@@ -461,6 +461,19 @@ city_selection_text_map = {
     }
 }
 
+CITY_TRANSLATIONS = {
+    "Riyadh": "الرياض",
+    "Jeddah": "جدة",
+    "Dammam": "الدمام",
+    "Makkah": "مكة المكرمة",
+    "Medina": "المدينة المنورة",
+    "Khobar": "الخبر",
+    "Dhahran": "الظهران",
+    "Tabuk": "تبوك",
+    "Buraidah": "بريدة",
+    "Hail": "حائل"
+}
+
 def send_city_selection_message(to, language='ar'):
     """Sends an interactive list message for city selection."""
     texts = city_selection_text_map.get(language, city_selection_text_map['en'])

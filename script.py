@@ -48,7 +48,8 @@ from whatsapp_utils import (
     send_furnished_apartment_survey_message,
     send_unfurnished_apartment_survey_message,
     send_city_selection_message,
-    send_interactive_button_message
+    send_interactive_button_message,
+    CITY_TRANSLATIONS
 )
 from calendar_handler import (
     parse_user_date_input,
@@ -619,8 +620,25 @@ def handle_new_messages():
                     logging.info(f"User {sender} selected city: {selected_title}")
                     properties_df = get_sheet2_data()
                     if properties_df.empty: send_whatsapp_message(sender, "عذراً، لم أتمكن من استرداد معلومات العقارات." if current_language == 'ar' else "Sorry, couldn't get property info."); return jsonify(status='error_fetching_sheet2_data'), 200
-                    city_properties = properties_df[properties_df['City'].str.lower() == selected_title.lower()]
-                    if city_properties.empty: send_whatsapp_message(sender, f"عذراً، لا توجد عقارات في {selected_title}." if current_language == 'ar' else f"Sorry, no properties in {selected_title}."); return jsonify(status='success_no_properties_in_city'), 200
+
+                    # Translate city name if the user is interacting in English
+                    search_city = selected_title
+                    if current_language == 'en':
+                        search_city = CITY_TRANSLATIONS.get(selected_title, selected_title)
+                        logging.info(f"Language is English, translating '{selected_title}' to '{search_city}' for search.")
+
+                    # Now filter using the possibly translated city name
+                    city_properties = properties_df[properties_df['City'] == search_city]
+
+                    if city_properties.empty:
+                        # Display the original English name in the error message for clarity
+                        error_message = f"عذراً، لا توجد عقارات في {selected_title}." if current_language == 'ar' else f"Sorry, no properties found in {selected_title}."
+                        send_whatsapp_message(sender, error_message)
+                        # Optional: Reset the flow or reprompt
+                        # send_city_selection_message(sender, language=current_language)
+                        # interactive_flow_states[sender]['step'] = 'awaiting_city_choice'
+                        return jsonify(status='success_no_properties_in_city'), 200
+
                     send_whatsapp_message(sender, f"ممتاز! وجدت {len(city_properties)} عقارات. جاري إرسالها..." if current_language == 'ar' else f"Great! Found {len(city_properties)} properties. Sending now...")
                     time.sleep(1)
                     for _, prop in city_properties.iterrows():
