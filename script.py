@@ -554,10 +554,21 @@ def handle_new_messages():
 
                 elif current_step == 'awaiting_furnished_choice':
                     if button_id:
-                        if button_id == 'button_id4' or button_id.endswith(':button_id4'): send_furnished_apartment_survey_message(sender, language=current_language);
-                        elif button_id == 'button_id5' or button_id.endswith(':button_id5'): send_unfurnished_apartment_survey_message(sender, language=current_language);
-                        else: send_furnished_query_message(sender, language=current_language); return jsonify(status='success_interactive_reprompted_unknown_option'), 200
-                        if sender in interactive_flow_states: del interactive_flow_states[sender];
+                        if button_id == 'button_id4' or button_id.endswith(':button_id4'):
+                            send_furnished_apartment_survey_message(sender, language=current_language)
+                        elif button_id == 'button_id5' or button_id.endswith(':button_id5'):
+                            send_unfurnished_apartment_survey_message(sender, language=current_language)
+                        elif button_id == 'speak_to_agent':
+                            owner_number = os.getenv("OWNER_WHATSAPP_NUMBER")
+                            if owner_number:
+                                send_whatsapp_message(owner_number, f"Client {sender} wants to speak to an agent.")
+                            send_whatsapp_message(sender, "An agent will contact you shortly." if current_language == 'en' else "سيتواصل معك وكيل قريبا.")
+                            if sender in interactive_flow_states: del interactive_flow_states[sender]
+                            return jsonify(status='success_interactive_handled'), 200
+                        else:
+                            send_furnished_query_message(sender, language=current_language)
+                            return jsonify(status='success_interactive_reprompted_unknown_option'), 200
+                        if sender in interactive_flow_states: del interactive_flow_states[sender]
                         return jsonify(status='success_interactive_handled_survey_sent'), 200
                     elif msg_type == 'text' and body_text_if_any:
                         send_whatsapp_message(sender, "الرجاء الاختيار من الأزرار." if current_language == 'ar' else "Please choose from the buttons.")
@@ -807,6 +818,14 @@ def handle_new_messages():
 
 
                 elif current_step == 'awaiting_city_choice' and selected_row_id and selected_title:
+                    if selected_row_id == 'speak_to_agent':
+                        owner_number = os.getenv("OWNER_WHATSAPP_NUMBER")
+                        if owner_number:
+                            send_whatsapp_message(owner_number, f"Client {sender} wants to speak to an agent.")
+                        send_whatsapp_message(sender, "An agent will contact you shortly." if current_language == 'en' else "سيتواصل معك وكيل قريبا.")
+                        if sender in interactive_flow_states: del interactive_flow_states[sender]
+                        return jsonify(status='success_interactive_handled'), 200
+
                     logging.info(f"User {sender} selected city: {selected_title}")
                     properties_df = get_sheet2_data()
                     if properties_df.empty: send_whatsapp_message(sender, "عذراً، لم أتمكن من استرداد معلومات العقارات." if current_language == 'ar' else "Sorry, couldn't get property info."); return jsonify(status='error_fetching_sheet2_data'), 200
