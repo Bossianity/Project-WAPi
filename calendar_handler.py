@@ -191,6 +191,18 @@ def check_calendar_availability(service, calendar_id, start_datetime_utc, end_da
         logging.error(f"Error checking calendar availability for calendar '{calendar_id}': {e}", exc_info=True)
         return False
 
+def find_soonest_availability(service, calendar_id, start_datetime_utc, num_days, max_search_days=90):
+    """
+    Finds the soonest available date after a given start date.
+    """
+    current_date = start_datetime_utc
+    for _ in range(max_search_days):
+        end_datetime_utc = current_date + timedelta(days=num_days)
+        if check_calendar_availability(service, calendar_id, current_date, end_datetime_utc):
+            return current_date
+        current_date += timedelta(days=1)
+    return None
+
 def create_booking_event(service, calendar_id, property_id_str, start_date_user_tz, num_days, client_name, client_phone, check_in_time_str="2 PM", check_out_time_str="11 AM"):
     """
     Creates a booking event.

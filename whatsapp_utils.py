@@ -315,7 +315,8 @@ initial_greeting_text_map = {
         'buttons': [
             {'id': 'button_id1', 'title': "أملك شقة حابي أشغلها", 'type': 'quick_reply'},
             {'id': 'button_id2', 'title': "ابي أستاجر شقة", 'type': 'quick_reply'},
-            {'id': 'button_id3', 'title': "أستفسارات أخرى", 'type': 'quick_reply'}
+            {'id': 'button_id3', 'title': "أستفسارات أخرى", 'type': 'quick_reply'},
+            {'id': 'speak_to_agent', 'title': "تحدث مع وكيل", 'type': 'quick_reply'}
         ]
     },
     'en': {
@@ -325,7 +326,8 @@ initial_greeting_text_map = {
         'buttons': [
             {'id': 'button_id1', 'title': "I own an apartment and want to lease it", 'type': 'quick_reply'},
             {'id': 'button_id2', 'title': "I want to rent an apartment", 'type': 'quick_reply'},
-            {'id': 'button_id3', 'title': "Other inquiries", 'type': 'quick_reply'}
+            {'id': 'button_id3', 'title': "Other inquiries", 'type': 'quick_reply'},
+            {'id': 'speak_to_agent', 'title': "Speak to an agent", 'type': 'quick_reply'}
         ]
     }
 }

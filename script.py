@@ -58,7 +58,8 @@ from calendar_handler import (
     check_calendar_availability,
     create_booking_event, # Added import
     DEFAULT_USER_INPUT_TIMEZONE as CAL_HANDLER_USER_TZ,
-    EVENT_STORAGE_TIMEZONE as CAL_HANDLER_STORAGE_TZ
+    EVENT_STORAGE_TIMEZONE as CAL_HANDLER_STORAGE_TZ,
+    find_soonest_availability
 )
 
 COMPANY_DATA_FOLDER = 'company_data'
@@ -523,8 +524,9 @@ def handle_new_messages():
                         if button_id == 'button_id1' or button_id.endswith(':button_id1'): action = 'operate'
                         elif button_id == 'button_id2' or button_id.endswith(':button_id2'): action = 'rent'
                         elif button_id == 'button_id3' or button_id.endswith(':button_id3'): action = 'other'
+                        elif button_id == 'speak_to_agent': action = 'speak_to_agent'
                     elif msg_type == 'text' and body_text_if_any:
-                        possible_intents = ['operate', 'rent', 'other']
+                        possible_intents = ['operate', 'rent', 'other', 'speak_to_agent']
                         action = get_intent_from_text(body_text_if_any, possible_intents, language=current_language)
 
                     if action == 'operate':
@@ -539,6 +541,12 @@ def handle_new_messages():
                         send_whatsapp_message(sender, "الرجاء كتابة سؤالك، وسأبذل قصارى جهدي لمساعدتك." if current_language == 'ar' else "Please type your question.");
                         if sender in interactive_flow_states: del interactive_flow_states[sender]
                         body_for_fallback = "User selected 'Other inquiries' and will type their question."
+                    elif action == 'speak_to_agent':
+                        owner_number = os.getenv("OWNER_WHATSAPP_NUMBER")
+                        if owner_number:
+                            send_whatsapp_message(owner_number, f"Client {sender} wants to speak to an agent.")
+                        send_whatsapp_message(sender, "An agent will contact you shortly." if current_language == 'en' else "سيتواصل معك وكيل قريبا.")
+                        if sender in interactive_flow_states: del interactive_flow_states[sender]
                     else: # If no button, no text match, or unknown button ID
                         send_initial_greeting_message(sender, language=current_language)
                         interactive_flow_states[sender]['step'] = 'awaiting_initial_choice'
@@ -600,13 +608,64 @@ def handle_new_messages():
                         ack_message = f"حسناً، تم تسجيل طلبك لحجز \"{prop_name}\" ابتداءً من تاريخ {start_date_str} لمدة {num_days} ليلة/ليالٍ. سأقوم الآن بالتحقق من التوفر..." if booking_language == 'ar' else f"Okay, noted your request for \"{prop_name}\" starting {start_date_str} for {num_days} night(s). I will now check availability..."
                         send_whatsapp_message(sender, ack_message)
                         logging.info(f"Stored num_days {num_days} for {sender}. All info for booking collected.")
-                        pass # Fall through to awaiting_calendar_check
+                        pass
                     except ValueError:
                         error_msg = "الرجاء إدخال عدد صحيح موجب لعدد الليالي." if booking_language == 'ar' else "Please enter a valid positive number for the nights."
                         send_whatsapp_message(sender, error_msg)
                         prompt_message = "كم عدد الليالي التي ترغب في الإقامة بها؟" if booking_language == 'ar' else "For how many nights would you like to stay?"
                         send_whatsapp_message(sender, prompt_message)
                         return jsonify(status='success_booking_reprompted_invalid_days'), 200
+
+                elif current_step == 'awaiting_alternative_booking_choice':
+                    possible_intents = ['book_soonest', 'choose_another_room']
+                    intent = get_intent_from_text(body_text_if_any, possible_intents, language=current_language)
+
+                    if intent == 'book_soonest':
+                        soonest_date_str = interactive_flow_states[sender]['soonest_available_date']
+                        interactive_flow_states[sender]['booking_start_date_str'] = soonest_date_str
+                        interactive_flow_states[sender]['step'] = 'awaiting_calendar_check'
+                        num_days = interactive_flow_states[sender]['booking_num_days']
+                        prop_name = interactive_flow_states[sender]['booking_property_name']
+                        ack_message = f"Okay, noted your request for \"{prop_name}\" starting {soonest_date_str} for {num_days} night(s). I will now check availability..."
+                        if current_language == 'ar':
+                            ack_message = f"حسناً، تم تسجيل طلبك لحجز \"{prop_name}\" ابتداءً من تاريخ {soonest_date_str} لمدة {num_days} ليلة/ليالٍ. سأقوم الآن بالتحقق من التوفر..."
+                        send_whatsapp_message(sender, ack_message)
+                        pass
+                    elif intent == 'choose_another_room':
+                        properties_df = get_sheet2_data()
+                        if properties_df.empty:
+                            send_whatsapp_message(sender, "Sorry, I couldn't retrieve property information." if current_language == 'en' else "عذراً، لم أتمكن من استرداد معلومات العقارات.")
+                            return jsonify(status='error_fetching_sheet2_data'), 200
+
+                        current_prop_id = interactive_flow_states[sender]['booking_property_id']
+                        # Assuming 'City' is available in the sheet
+                        current_prop_city = properties_df[properties_df['PropertyID'] == current_prop_id].iloc[0]['City']
+
+                        other_rooms = properties_df[(properties_df['City'] == current_prop_city) & (properties_df['PropertyID'] != current_prop_id)]
+
+                        if not other_rooms.empty:
+                            send_whatsapp_message(sender, "Here are other rooms in the same city:" if current_language == 'en' else "إليك غرف أخرى في نفس المدينة:")
+                            for _, prop in other_rooms.iterrows():
+                                prop_id_card = str(prop['PropertyID']).strip()
+                                if current_language == 'en':
+                                    prop_name_card = str(prop.get('PropertyName_en') or prop['PropertyName']).strip()
+                                    prop_description = str(prop.get('Description_en') or prop.get('Description', '')).strip()
+                                else:
+                                    prop_name_card = str(prop['PropertyName']).strip()
+                                    prop_description = str(prop.get('Description', '')).strip()
+
+                                buttons = [{"type": "quick_reply", "title": "Show Photos", "id": f"show_photos_{prop_id_card}"},
+                                           {"type": "quick_reply", "title": "Prices", "id": f"show_prices_{prop_id_card}"},
+                                           {"type": "quick_reply", "title": "Book", "id": f"book_prop_{prop_id_card}"}]
+                                msg_data = {'header': prop_name_card, 'body': prop_description, 'footer': "Choose" if current_language=='en' else "إضغط للإختيار", 'buttons': buttons}
+                                send_interactive_button_message(sender, msg_data)
+                                time.sleep(1.5)
+                            interactive_flow_states[sender]['step'] = f'awaiting_property_action_{current_prop_city.lower().replace(" ", "_")}'
+                        else:
+                            send_whatsapp_message(sender, "No other rooms found in this city." if current_language == 'en' else "لم يتم العثور على غرف أخرى في هذه المدينة.")
+                            send_city_selection_message(sender, language=current_language)
+                            interactive_flow_states[sender]['step'] = 'awaiting_city_choice'
+                        return jsonify(status='success_interactive_handled'), 200
 
                 if interactive_flow_states[sender].get('step') == 'awaiting_calendar_check':
                     logging.info(f"User {sender} (state: awaiting_calendar_check). Proceeding with calendar operations.")
@@ -641,10 +700,21 @@ def handle_new_messages():
                         send_whatsapp_message(sender, msg_body)
                         logging.info(f"Property {prop_id} available. Awaiting client name.")
                     else:
-                        msg_body = f"للأسف، \"{prop_name}\" غير متاح للتواريخ المختارة. هل ترغب في تجربة تواريخ أخرى؟" if booking_lang == 'ar' else f"Unfortunately, \"{prop_name}\" is not available for the selected dates. Would you like to try different dates?"
-                        send_whatsapp_message(sender, msg_body)
-                        del interactive_flow_states[sender] # Reset flow
-                        # Or send back to city selection / property selection
+                        soonest_available_date = find_soonest_availability(cal_service, target_calendar_id, event_start_dt_utc, num_days)
+                        if soonest_available_date:
+                            formatted_soonest_date = soonest_available_date.strftime("%B %d, %Y")
+                            msg_body = f"Unfortunately, \"{prop_name}\" is not available for the selected dates. The soonest available date is {formatted_soonest_date}. Would you like to book for this date or choose another room?"
+                            if booking_lang == 'ar':
+                                msg_body = f"للأسف، \"{prop_name}\" غير متاح للتواريخ المختارة. أقرب تاريخ متاح هو {formatted_soonest_date}. هل ترغب في الحجز لهذا التاريخ أو اختيار غرفة أخرى؟"
+                            send_whatsapp_message(sender, msg_body)
+                            interactive_flow_states[sender]['step'] = 'awaiting_alternative_booking_choice'
+                            interactive_flow_states[sender]['soonest_available_date'] = soonest_available_date.strftime('%Y-%m-%d')
+                        else:
+                            msg_body = f"Unfortunately, \"{prop_name}\" is not available for the selected dates, and I couldn't find an alternative. Would you like to try different dates or choose another room?"
+                            if booking_lang == 'ar':
+                                msg_body = f"للأسف، \"{prop_name}\" غير متاح للتواريخ المختارة، ولم أتمكن من العثور على بديل. هل ترغب في تجربة تواريخ مختلفة أو اختيار غرفة أخرى؟"
+                            send_whatsapp_message(sender, msg_body)
+                            del interactive_flow_states[sender] # Reset flow
                     return jsonify(status='success_calendar_check_done'), 200
 
                 elif current_step == 'awaiting_client_name_confirmation' and msg_type == 'text' and body_text_if_any:
