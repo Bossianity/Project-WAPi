@@ -223,6 +223,101 @@ def save_history(uid, history):
     except Exception as e: logging.error(f"Error saving history for {uid}: {e}")
 
 
+def get_date_from_text_with_llm(text, language='en'):
+    """
+    Uses the LLM to extract a date from a user's text, especially for colloquial terms.
+    Returns a datetime object or None.
+    """
+    if not AI_MODEL:
+        logging.error("AI_MODEL not configured. Cannot get date from text.")
+        return None
+
+    today = datetime.now(pytz.timezone('Asia/Dubai')).strftime('%Y-%m-%d')
+
+    if language == 'ar':
+        prompt = (
+            f"المرجع الزمني لـ 'اليوم' هو {today}. "
+            f"من النص التالي: \"{text}\"، الرجاء استخراج التاريخ المطلوب بصيغة YYYY-MM-DD. "
+            "إذا كان النص 'بكرة' أو 'غدا'، فهذا يعني يوما واحدا بعد اليوم. "
+            "إذا لم يتم العثور على تاريخ، قم بالرد بـ 'None'."
+            "قم بالرد فقط بالتاريخ بصيغة YYYY-MM-DD."
+        )
+    else:
+        prompt = (
+            f"The reference for 'today' is {today}. "
+            f"From the following text: \"{text}\", please extract the requested date in YYYY-MM-DD format. "
+            "If the text is 'tomorrow', it means one day after today. "
+            "If no date is found, respond with 'None'. "
+            "Only respond with the date in YYYY-MM-DD format."
+        )
+
+    try:
+        messages = [HumanMessage(content=prompt)]
+        response = AI_MODEL.invoke(messages)
+        date_str = response.content.strip()
+
+        if date_str and date_str.lower() != 'none':
+            # Validate that the response is a plausible date format
+            if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                logging.info(f"LLM extracted date: '{date_str}' from text: '{text}'")
+                # Use dateparser to get a proper timezone-aware datetime object
+                # This helps standardize the output
+                parsed_date = dateparser.parse(date_str)
+                if parsed_date:
+                    return CAL_HANDLER_USER_TZ.localize(parsed_date)
+            else:
+                 logging.warning(f"LLM returned a non-date string for date extraction: '{date_str}'")
+
+    except Exception as e:
+        logging.error(f"Error getting date from LLM: {e}", exc_info=True)
+
+    return None
+
+def get_intent_from_text(text, possible_intents, language='en'):
+    """
+    Uses the LLM to classify the user's text into one of the possible intents.
+    """
+    if not AI_MODEL:
+        logging.error("AI_MODEL not configured. Cannot get intent from text.")
+        return None
+
+    # Create a dynamic prompt based on the language and available intents
+    intent_list_str = ", ".join([f"'{intent}'" for intent in possible_intents])
+    if language == 'ar':
+        prompt_template = (
+            "الرجاء تحليل النص التالي وتحديد النية الأساسية للمستخدم. "
+            "النص هو: \"{text}\". "
+            "يجب أن تكون النية واحدة من الخيارات التالية: {intent_list}. "
+            "إذا لم يتطابق النص مع أي من الخيارات، قم بالرد بـ 'None'. "
+            "قم بالرد فقط باسم النية المحددة."
+        )
+    else:
+        prompt_template = (
+            "Please analyze the following text and determine the user's primary intent. "
+            "The text is: \"{text}\". "
+            "The intent must be one of the following options: {intent_list}. "
+            "If the text does not match any of the options, respond with 'None'. "
+            "Respond only with the name of the identified intent."
+        )
+
+    prompt = prompt_template.format(text=text, intent_list=intent_list_str)
+
+    try:
+        messages = [HumanMessage(content=prompt)]
+        response = AI_MODEL.invoke(messages)
+        intent = response.content.strip().replace("'", "") # Clean up response
+
+        if intent in possible_intents:
+            logging.info(f"LLM identified intent: '{intent}' for text: '{text}'")
+            return intent
+        else:
+            logging.warning(f"LLM response '{intent}' is not in the list of possible intents. Text was: '{text}'")
+            return None
+    except Exception as e:
+        logging.error(f"Error getting intent from LLM: {e}", exc_info=True)
+        return None
+
+
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
     if not AI_MODEL: return {'type': 'text', 'content': "AI Model not configured."}
     analysis_prompt = f"Analyze: '{text}'. JSON: intent ('property_search'/'general_question'), filters (dict/null). Filters: Price_AED, Bedrooms, emirate, city, area, developer, Title."
@@ -423,29 +518,14 @@ def handle_new_messages():
                     pass # Assuming this logic is correct from previous steps
 
                 elif current_step == 'awaiting_initial_choice':
-                    # Keywords for each option
-                    rent_keywords_ar = ["استاجر", "أستاجر", "استئجار", "إستئجار", "اجار", "إيجار", "ابي استاجر", "ابي أستأجر"]
-                    rent_keywords_en = ["rent", "lease", "i want to rent"]
-                    operate_keywords_ar = ["اشغلها", "أشغلها", "تشغيل", "امل", "أملك"]
-                    operate_keywords_en = ["operate", "i own", "run my apartment"]
-                    other_keywords_ar = ["اخرى", "أخرى", "استفسار", "سؤال"]
-                    other_keywords_en = ["other", "inquiries", "question", "query"]
-
-                    # Combine all keywords for the current language
-                    rent_keywords = rent_keywords_ar if current_language == 'ar' else rent_keywords_en
-                    operate_keywords = operate_keywords_ar if current_language == 'ar' else operate_keywords_en
-                    other_keywords = other_keywords_ar if current_language == 'ar' else other_keywords_en
-
                     action = None
                     if button_id:
                         if button_id == 'button_id1' or button_id.endswith(':button_id1'): action = 'operate'
                         elif button_id == 'button_id2' or button_id.endswith(':button_id2'): action = 'rent'
                         elif button_id == 'button_id3' or button_id.endswith(':button_id3'): action = 'other'
                     elif msg_type == 'text' and body_text_if_any:
-                        text_lower = body_text_if_any.lower().strip()
-                        if any(keyword in text_lower for keyword in operate_keywords): action = 'operate'
-                        elif any(keyword in text_lower for keyword in rent_keywords): action = 'rent'
-                        elif any(keyword in text_lower for keyword in other_keywords): action = 'other'
+                        possible_intents = ['operate', 'rent', 'other']
+                        action = get_intent_from_text(body_text_if_any, possible_intents, language=current_language)
 
                     if action == 'operate':
                         send_furnished_query_message(sender, language=current_language)
@@ -481,6 +561,10 @@ def handle_new_messages():
                     booking_language = interactive_flow_states[sender].get('booking_language', current_language)
                     prop_name = interactive_flow_states[sender].get('booking_property_name', 'the property')
                     parsed_date = parse_user_date_input(body_text_if_any, user_timezone=CAL_HANDLER_USER_TZ)
+
+                    if not parsed_date:
+                        logging.info(f"dateparser failed for input: '{body_text_if_any}'. Trying LLM.")
+                        parsed_date = get_date_from_text_with_llm(body_text_if_any, language=booking_language)
 
                     if parsed_date:
                         today_user_tz = datetime.now(CAL_HANDLER_USER_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -718,15 +802,8 @@ def handle_new_messages():
 
                     # Case 2: User types a text command
                     elif msg_type == 'text' and body_text_if_any:
-                        text_lower = body_text_if_any.lower().strip()
-                        # Keywords for text commands
-                        photos_keywords = ["photos", "images", "pics", "صور"]
-                        prices_keywords = ["prices", "price", "cost", "أسعار", "سعر", "اسعار"]
-                        book_keywords = ["book", "booking", "reserve", "حجز", "إحجز", "احجز"]
-
-                        if any(keyword in text_lower for keyword in photos_keywords): action_type = "photos"
-                        elif any(keyword in text_lower for keyword in prices_keywords): action_type = "prices"
-                        elif any(keyword in text_lower for keyword in book_keywords): action_type = "book"
+                        possible_intents = ['photos', 'prices', 'book']
+                        action_type = get_intent_from_text(body_text_if_any, possible_intents, language=current_language)
 
                         if action_type:
                             prop_id_to_use = interactive_flow_states[sender].get('last_interacted_prop_id')
