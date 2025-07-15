@@ -891,10 +891,18 @@ def handle_new_messages():
 
                     # Case 2: User types a text command
                     elif msg_type == 'text' and body_text_if_any:
-                        possible_intents = ['photos', 'prices', 'book']
+                        possible_intents = ['photos', 'prices', 'book', 'speak_to_agent']
                         action_type = get_intent_from_text(body_text_if_any, possible_intents, language=current_language)
 
                         if action_type:
+                            if action_type == 'speak_to_agent':
+                                owner_number = os.getenv("OWNER_WHATSAPP_NUMBER")
+                                if owner_number:
+                                    send_whatsapp_message(owner_number, f"Client {sender} wants to speak to an agent.")
+                                send_whatsapp_message(sender, "An agent will contact you shortly." if current_language == 'en' else "سيتواصل معك وكيل قريبا.")
+                                if sender in interactive_flow_states: del interactive_flow_states[sender]
+                                return jsonify(status='success_interactive_handled'), 200
+
                             prop_id_to_use = interactive_flow_states[sender].get('last_interacted_prop_id')
                             if not prop_id_to_use:
                                 no_prop_msg = "Please select a property first by clicking one of its buttons."
