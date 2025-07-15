@@ -286,17 +286,19 @@ def get_intent_from_text(text, possible_intents, language='en'):
     intent_list_str = ", ".join([f"'{intent}'" for intent in possible_intents])
     if language == 'ar':
         prompt_template = (
-            "الرجاء تحليل النص التالي وتحديد النية الأساسية للمستخدم. "
-            "النص هو: \"{text}\". "
+            "الرجاء تحليل النص التالي وتحديد النية الأساسية للمستخدم. النص هو: \"{text}\". "
             "يجب أن تكون النية واحدة من الخيارات التالية: {intent_list}. "
+            "أمثلة لـ 'book_soonest': 'نعم، احجز هذا'، 'اوكي احجزلي في هذا التاريخ'، 'نعم'. "
+            "أمثلة لـ 'choose_another_room': 'لا، أرني غرفة أخرى'، 'غرفة أخرى'. "
             "إذا لم يتطابق النص مع أي من الخيارات، قم بالرد بـ 'None'. "
             "قم بالرد فقط باسم النية المحددة."
         )
     else:
         prompt_template = (
-            "Please analyze the following text and determine the user's primary intent. "
-            "The text is: \"{text}\". "
+            "Please analyze the following text and determine the user's primary intent. The text is: \"{text}\". "
             "The intent must be one of the following options: {intent_list}. "
+            "Examples for 'book_soonest': 'Yes, book this one', 'Okay book it for that date', 'yes'. "
+            "Examples for 'choose_another_room': 'No, show me another room', 'another room'. "
             "If the text does not match any of the options, respond with 'None'. "
             "Respond only with the name of the identified intent."
         )
@@ -572,7 +574,22 @@ def handle_new_messages():
                     logging.info(f"User {sender} (state: awaiting_booking_date) sent date: {body_text_if_any}")
                     booking_language = interactive_flow_states[sender].get('booking_language', current_language)
                     prop_name = interactive_flow_states[sender].get('booking_property_name', 'the property')
-                    parsed_date = parse_user_date_input(body_text_if_any, user_timezone=CAL_HANDLER_USER_TZ)
+
+                    parsed_date = None
+                    user_input_lower = body_text_if_any.strip().lower()
+
+                    # Quick check for common Arabic date keywords
+                    if booking_language == 'ar':
+                        if 'بكرة' in user_input_lower or 'غدا' in user_input_lower:
+                            parsed_date = datetime.now(CAL_HANDLER_USER_TZ) + timedelta(days=1)
+                            logging.info(f"Quick-parsed 'tomorrow' for Arabic input: '{body_text_if_any}'")
+                        elif 'اليوم' in user_input_lower:
+                            parsed_date = datetime.now(CAL_HANDLER_USER_TZ)
+                            logging.info(f"Quick-parsed 'today' for Arabic input: '{body_text_if_any}'")
+
+                    # If quick check didn't resolve, proceed with existing logic
+                    if not parsed_date:
+                        parsed_date = parse_user_date_input(body_text_if_any, user_timezone=CAL_HANDLER_USER_TZ)
 
                     if not parsed_date:
                         logging.info(f"dateparser failed for input: '{body_text_if_any}'. Trying LLM.")
