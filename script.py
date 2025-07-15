@@ -524,9 +524,8 @@ def handle_new_messages():
                         if button_id == 'button_id1' or button_id.endswith(':button_id1'): action = 'operate'
                         elif button_id == 'button_id2' or button_id.endswith(':button_id2'): action = 'rent'
                         elif button_id == 'button_id3' or button_id.endswith(':button_id3'): action = 'other'
-                        elif button_id == 'speak_to_agent': action = 'speak_to_agent'
                     elif msg_type == 'text' and body_text_if_any:
-                        possible_intents = ['operate', 'rent', 'other', 'speak_to_agent']
+                        possible_intents = ['operate', 'rent', 'other']
                         action = get_intent_from_text(body_text_if_any, possible_intents, language=current_language)
 
                     if action == 'operate':
@@ -541,12 +540,6 @@ def handle_new_messages():
                         send_whatsapp_message(sender, "الرجاء كتابة سؤالك، وسأبذل قصارى جهدي لمساعدتك." if current_language == 'ar' else "Please type your question.");
                         if sender in interactive_flow_states: del interactive_flow_states[sender]
                         body_for_fallback = "User selected 'Other inquiries' and will type their question."
-                    elif action == 'speak_to_agent':
-                        owner_number = os.getenv("OWNER_WHATSAPP_NUMBER")
-                        if owner_number:
-                            send_whatsapp_message(owner_number, f"Client {sender} wants to speak to an agent.")
-                        send_whatsapp_message(sender, "An agent will contact you shortly." if current_language == 'en' else "سيتواصل معك وكيل قريبا.")
-                        if sender in interactive_flow_states: del interactive_flow_states[sender]
                     else: # If no button, no text match, or unknown button ID
                         send_initial_greeting_message(sender, language=current_language)
                         interactive_flow_states[sender]['step'] = 'awaiting_initial_choice'
