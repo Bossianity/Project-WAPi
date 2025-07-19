@@ -131,10 +131,15 @@ def initialize_vector_store():
         logging.error(f"Failed to initialize OpenAIEmbeddings: {e}", exc_info=True)
         return None
 
-    if not os.path.exists(VECTOR_STORE_PATH):
+    if not os.path.exists(VECTOR_STORE_PATH) or not os.path.exists(os.path.join(VECTOR_STORE_PATH, "index.faiss")):
         os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
         logging.info("No existing index found. Creating new empty FAISS index.")
-        faiss_store = FAISS.from_texts(["init"], embeddings_object)
+        # Create an empty index. The dimension will be inferred from the first documents added.
+        # We need a dummy document to infer the embedding dimension, but we will not add it to the index.
+        dummy_doc = [Document(page_content="")]
+        faiss_store = FAISS.from_documents(dummy_doc, embeddings_object)
+        # Remove the dummy document
+        faiss_store.delete([faiss_store.index_to_docstore_id[0]])
         faiss_store.save_local(VECTOR_STORE_PATH)
         return faiss_store
     else:
@@ -144,7 +149,9 @@ def initialize_vector_store():
         except Exception as e:
             logging.error(f"Failed to load existing FAISS index: {e}. Creating a new one.", exc_info=True)
             os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
-            faiss_store = FAISS.from_texts(["init"], embeddings_object)
+            dummy_doc = [Document(page_content="")]
+            faiss_store = FAISS.from_documents(dummy_doc, embeddings_object)
+            faiss_store.delete([faiss_store.index_to_docstore_id[0]])
             faiss_store.save_local(VECTOR_STORE_PATH)
             return faiss_store
 
