@@ -351,7 +351,13 @@ def rag_pipeline(query: str, sender_id: str):
     try:
         resp = AI_MODEL.invoke(messages)
         if isinstance(resp, AIMessage):
-            return resp.content.strip()
+            # Handle both string and list content
+            if isinstance(resp.content, list):
+                # Join list elements into a single string
+                return " ".join(map(str, resp.content)).strip()
+            else:
+                # If it's already a string, just strip it
+                return str(resp.content).strip()
         else:
             # Fallback for unexpected response types
             return str(resp).strip()
