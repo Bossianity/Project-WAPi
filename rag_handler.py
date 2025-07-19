@@ -92,8 +92,17 @@ def initialize_vector_store():
         # Process sheet data into documents
         documents = []
         for row in sheet_data:
-            content = " ".join(str(value) for value in row.values())
-            documents.append(Document(page_content=content, metadata={"source": "google_sheet"}))
+            # Ensure required columns are present
+            if 'Concept_Text' not in row:
+                logging.warning(f"Skipping row due to missing 'Concept_Text': {row}")
+                continue
+
+            concept_text = row.get('Concept_Text', '')
+            # All other columns are considered metadata
+            metadata = {k: v for k, v in row.items() if k != 'Concept_Text'}
+            metadata["source"] = "google_sheet" # Add a general source identifier
+
+            documents.append(Document(page_content=concept_text, metadata=metadata))
 
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         texts = text_splitter.split_documents(documents)
