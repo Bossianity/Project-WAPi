@@ -10,6 +10,9 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.document_loaders import TextLoader
 from langchain_core.documents import Document
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain_openai import ChatOpenAI
 
 # --- Global Constants ---
 VECTOR_STORE_PATH = "faiss_index"
@@ -58,7 +61,7 @@ def initialize_vector_store():
             return faiss_store
         except Exception as e:
             logging.error(f"Failed to load existing FAISS index: {e}. Will attempt to create a new one.", exc_info=True)
-    
+
     # --- NEW: Create a new index with a retry loop ---
     logging.info("No existing index found. Creating new FAISS index...")
     max_retries = 3
@@ -222,7 +225,7 @@ def process_google_document_text(document_id: str, text_content: str, vector_sto
     if not vector_store or not embeddings:
         logging.error("process_google_document_text: Vector store or embeddings not provided.")
         return False
-        
+
     try:
         # Step 1: Delete existing entries for this document
         delete_document_from_vector_store(document_id, vector_store)
@@ -242,7 +245,7 @@ def process_google_document_text(document_id: str, text_content: str, vector_sto
             return True # Not an error, just nothing to add
 
         docs = [Document(page_content=chunk, metadata={'source': document_id}) for chunk in chunks]
-        
+
         # Step 3: Add new documents and save
         vector_store.add_documents(docs)
         vector_store.save_local(VECTOR_STORE_PATH)
@@ -253,10 +256,23 @@ def process_google_document_text(document_id: str, text_content: str, vector_sto
         logging.error(f"Error processing Google document text for ID '{document_id}': {e}", exc_info=True)
         return False
 
+def get_hyde_llm_chain():
+    """
+    Creates an LLMChain for the HyDE technique.
+    """
+    prompt_template = """
+    Please write a passage to answer the question
+    Question: {question}
+    Passage:
+    """
+    prompt = PromptTemplate(input_variables=["question"], template=prompt_template)
+    llm = ChatOpenAI(model_name="o3-mini", temperature=0)
+    return LLMChain(llm=llm, prompt=prompt)
+
 # --- Querying ---
 def query_vector_store(query_text: str, vector_store: FAISS, k: int = 4):
     """
-    Queries the vector store for similar documents.
+    Queries the vector store for similar documents using HyDE.
     """
     if not vector_store:
         logging.warning("query_vector_store: Vector store not initialized.")
@@ -267,8 +283,13 @@ def query_vector_store(query_text: str, vector_store: FAISS, k: int = 4):
         # Allow query to proceed, may return the 'init' doc.
 
     try:
-        logging.info(f"Performing similarity search for query: '{query_text}' with k={k}")
-        results = vector_store.similarity_search(query_text, k=k)
+        # 1. Generate a hypothetical document
+        hyde_chain = get_hyde_llm_chain()
+        hypothetical_document = hyde_chain.run(query_text)
+
+        # 2. Use the hypothetical document for similarity search
+        logging.info(f"Performing similarity search for query: '{query_text}' with k={k} using HyDE")
+        results = vector_store.similarity_search(hypothetical_document, k=k)
         logging.info(f"Found {len(results)} results.")
         return results
     except Exception as e:
@@ -289,7 +310,7 @@ if __name__ == '__main__':
     if not vs:
         logging.error("Failed to initialize vector store. Aborting tests.")
         exit()
-        
+
     logging.info("Vector store initialized successfully.")
 
     try:
@@ -315,7 +336,7 @@ if __name__ == '__main__':
 
     if process_success_txt:
         logging.info(f"Successfully processed {sample_txt_path}")
-        
+
         # Query the vector store
         logging.info("Querying for 'Gemini performance'")
         query_results = query_vector_store("Gemini performance", vs)

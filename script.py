@@ -111,7 +111,10 @@ except Exception as e:
 
 AI_MODEL = None
 if OPENAI_API_KEY:
-    AI_MODEL = ChatOpenAI(model_name='gpt-4o', openai_api_key=OPENAI_API_KEY, temperature=0)
+    AI_MODEL = ChatOpenAI(
+    model="o3-mini",
+    reasoning={"effort": "high"}
+)
 else:
     logging.error("OPENAI_API_KEY not found; AI responses will fail.")
 
@@ -313,103 +316,52 @@ def get_intent_from_text(text, possible_intents, language='en'):
         return None
 
 
-def handle_educational_query(text, concepts_df):
+def rag_pipeline(query: str, sender_id: str):
     """
-    Handles educational queries by searching for concepts and generating a response.
+    The new RAG pipeline.
     """
-    text_lower = text.lower().strip()
+    vector_store = current_app.config.get('VECTOR_STORE') or vector_store_rag
+    if not vector_store:
+        return "The educational database is currently unavailable. Please try again later."
 
-    # Tokenize the user's query
-    query_tokens = re.findall(r'\b\w+\b', text_lower)
-
-    # Handle direct questions
-    if "how many times" in text_lower and "been tested" in text_lower:
-        concept_query = re.sub(r"how many times has|been tested", "", text_lower, flags=re.IGNORECASE).strip()
-        concept_query = concept_query.replace("?", "")
-        matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False) |
-                                    concepts_df['Tags'].str.lower().str.contains(concept_query, na=False)]
-        count = len(matching_rows)
-        if count > 0:
-            return f"The concept '{concept_query}' has been tested {count} time(s)."
-        else:
-            return f"The concept '{concept_query}' has not been found in the tested materials."
-
-    if "is this high yield" in text_lower or "do i need to know this" in text_lower:
-        concept_query = re.sub(r"is this high yield|do i need to know this", "", text_lower, flags=re.IGNORECASE).strip()
-        concept_query = concept_query.replace("?", "")
-        matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False) |
-                                    concepts_df['Tags'].str.lower().str.contains(concept_query, na=False)]
-        if not matching_rows.empty:
-            return f"Yes, the concept '{concept_query}' is high yield and has been tested. Here's a summary:\n" + get_summary(matching_rows)
-        else:
-            return f"No, the concept '{concept_query}' was not found in the tested materials."
-
-    # General summarization query
-    matching_rows = pd.DataFrame()
-    for token in query_tokens:
-        rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(token, na=False) |
-                           concepts_df['Tags'].str.lower().str.contains(token, na=False)]
-        matching_rows = pd.concat([matching_rows, rows])
-
-    # Remove duplicate rows
-    matching_rows = matching_rows.drop_duplicates()
-
-    if not matching_rows.empty:
-        return "Here is a summary of the high-yield facts for your query:\n" + get_summary(matching_rows)
-    else:
+    # 1. Retrieve relevant concepts
+    retrieved_docs = query_vector_store(query, vector_store, k=5)
+    if not retrieved_docs:
         return "I could not find any high-yield facts related to your query in the provided materials."
 
-def get_summary(matching_rows):
-    """
-    Generates a summarized response from the matching rows.
-    """
-    summary = ""
-    for _, row in matching_rows.iterrows():
-        concept_text = row['Concept_Text']
-        source_id = row['Source_ID']
-        summary += f"- {concept_text} [{source_id}]\n"
-    return summary
+    # 2. Generate a summary
+    context_str = "\n\n".join([doc.page_content for doc in retrieved_docs])
+
+    system_prompt_content = (
+        "You are a helpful and friendly educational bot. "
+        "Your primary goal is to provide high-yield summaries of USMLE Step 2 exam concepts based on the provided text. "
+        "Your tone is that of a knowledgeable and encouraging study partner. "
+        "CRITICAL RULE: Your response MUST be based *only* on the information from the provided text. Do not add any information from external sources. "
+        "When providing summaries, rephrase the concepts to be more understandable and create a narrative where possible, but the core meaning must remain the same. "
+        "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
+        "If the user's question cannot be answered from the text, state that the information is not available in the provided materials. "
+        "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only."
+    )
+
+    messages = [
+        SystemMessage(content=system_prompt_content),
+        HumanMessage(content=f"Please provide a summary for the following query based on the provided text:\n\nQuery: {query}\n\nText: {context_str}")
+    ]
+
+    try:
+        resp = AI_MODEL.invoke(messages)
+        return resp.content.strip()
+    except Exception as e:
+        logging.error(f"Error during RAG pipeline summary generation: {e}", exc_info=True)
+        return "I am having trouble processing your request."
 
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
-    if not AI_MODEL: return {'type': 'text', 'content': "AI Model not configured."}
+    if not AI_MODEL:
+        return {'type': 'text', 'content': "AI Model not configured."}
 
-    concepts_df = property_handler.get_concept_data()
-
-    if not concepts_df.empty:
-        response_text = handle_educational_query(text, concepts_df)
-        return {'type': 'text', 'content': response_text}
-    else:
-        # Fallback to general RAG response if the sheet is empty or has issues
-        vector_store = current_app.config.get('VECTOR_STORE') or vector_store_rag
-        context_str = ""
-        if vector_store:
-            retrieved_docs = query_vector_store(text, vector_store, k=3)
-            if retrieved_docs:
-                context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
-
-        current_language = user_languages.get(sender_id, 'ar')
-        effective_persona_name = "EduBot"
-        system_prompt_content = (f"You are {effective_persona_name}. " + BASE_PROMPT_TEMPLATE)
-
-        messages = [SystemMessage(content=system_prompt_content)]
-        if history_dicts:
-            for item in history_dicts:
-                messages.append(HumanMessage(content=item['parts'][0]) if item['role'] == 'user' else AIMessage(content=item['parts'][0]))
-
-        messages.append(HumanMessage(content=(context_str + f"\n\nUser Question: {text}" if context_str else text)))
-
-        for attempt in range(retries):
-            try:
-                resp = AI_MODEL.invoke(messages)
-                raw_llm_output = resp.content.strip()
-                response_text_for_display = raw_llm_output.replace("[ACTION_NOTIFY_UNANSWERED_QUERY]", "").strip()
-                if response_text_for_display:
-                    return {'type': 'text', 'content': response_text_for_display}
-            except Exception as e:
-                logging.warning(f"LLM API error attempt {attempt+1}: {e}")
-                time.sleep(1)
-
-        return {'type': 'text', 'content': "I am having trouble processing your request."}
+    # All educational queries will now go through the RAG pipeline
+    response_text = rag_pipeline(text, sender_id)
+    return {'type': 'text', 'content': response_text}
 
 def split_message(text, max_lines=25, max_chars_per_msg=1500): # WhatsApp limits are higher
     lines = text.split('\n')
