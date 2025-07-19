@@ -11,6 +11,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import google.api_core.exceptions
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
+import faiss
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
@@ -118,7 +119,7 @@ def get_concept_data_from_sheet():
 
 def initialize_vector_store():
     """
-    Initializes or loads a FAISS vector store.
+    Initializes or loads a FAISS vector store, ensuring it's populated with Google Sheet data.
     """
     openai_api_key = os.getenv('OPENAI_API_KEY')
     if not openai_api_key:
@@ -131,29 +132,60 @@ def initialize_vector_store():
         logging.error(f"Failed to initialize OpenAIEmbeddings: {e}", exc_info=True)
         return None
 
-    if not os.path.exists(VECTOR_STORE_PATH) or not os.path.exists(os.path.join(VECTOR_STORE_PATH, "index.faiss")):
+    force_reindex = os.getenv('FORCE_REINDEX', 'false').lower() == 'true'
+    if force_reindex and os.path.exists(VECTOR_STORE_PATH):
+        logging.info("FORCE_REINDEX is true. Removing existing vector store.")
+        shutil.rmtree(VECTOR_STORE_PATH)
+
+    if not os.path.exists(VECTOR_STORE_PATH):
         os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
-        logging.info("No existing index found. Creating new empty FAISS index.")
-        # Create an empty index. The dimension will be inferred from the first documents added.
-        # We need a dummy document to infer the embedding dimension, but we will not add it to the index.
-        dummy_doc = [Document(page_content="")]
-        faiss_store = FAISS.from_documents(dummy_doc, embeddings_object)
-        # Remove the dummy document
-        faiss_store.delete([faiss_store.index_to_docstore_id[0]])
-        faiss_store.save_local(VECTOR_STORE_PATH)
-        return faiss_store
-    else:
-        try:
-            logging.info(f"Attempting to load existing FAISS index from {VECTOR_STORE_PATH}")
-            return FAISS.load_local(VECTOR_STORE_PATH, embeddings_object, allow_dangerous_deserialization=True)
-        except Exception as e:
-            logging.error(f"Failed to load existing FAISS index: {e}. Creating a new one.", exc_info=True)
-            os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
-            dummy_doc = [Document(page_content="")]
-            faiss_store = FAISS.from_documents(dummy_doc, embeddings_object)
-            faiss_store.delete([faiss_store.index_to_docstore_id[0]])
+
+    # Always fetch data from Google Sheet
+    logging.info("Fetching data from Google Sheet to update vector store.")
+    concept_df = get_concept_data_from_sheet()
+    if concept_df.empty:
+        logging.error("Failed to fetch Google Sheet data. Vector store will not be updated.")
+        # Still try to load existing store if it exists
+        if os.path.exists(os.path.join(VECTOR_STORE_PATH, "index.faiss")):
+            try:
+                logging.info(f"Attempting to load existing FAISS index from {VECTOR_STORE_PATH}")
+                return FAISS.load_local(VECTOR_STORE_PATH, embeddings_object, allow_dangerous_deserialization=True)
+            except Exception as e:
+                logging.error(f"Failed to load existing FAISS index: {e}. Returning None.", exc_info=True)
+                return None
+        else:
+            # Create an empty store
+            logging.info("Creating an empty FAISS index.")
+            embedding_dimension = len(embeddings_object.embed_query("test"))
+            index = faiss.IndexFlatL2(embedding_dimension)
+            faiss_store = FAISS(embeddings_object.embed_query, index, {}, {})
             faiss_store.save_local(VECTOR_STORE_PATH)
             return faiss_store
+
+    documents = []
+    for index, row in concept_df.iterrows():
+        metadata = row.to_dict()
+        # The concept text is the main content
+        page_content = metadata.pop('Concept_Text', '')
+        documents.append(Document(page_content=page_content, metadata=metadata))
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    texts = text_splitter.split_documents(documents)
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logging.info("Creating new FAISS index from Google Sheet data.")
+            faiss_store = FAISS.from_documents(texts, embeddings_object)
+            faiss_store.save_local(VECTOR_STORE_PATH)
+            logging.info("New FAISS index created and populated from Google Sheet successfully.")
+            return faiss_store
+        except Exception as e:
+            logging.error(f"An unexpected error occurred on attempt {attempt + 1}/{max_retries}: {e}", exc_info=True)
+            time.sleep(2 ** attempt)
+
+    logging.critical("All attempts to create and populate FAISS index failed.")
+    return None
 
 
 # --- Processed Files Log Management ---
@@ -345,29 +377,11 @@ def get_hyde_llm_chain():
 # --- Querying ---
 def query_vector_store(query_text: str, vector_store: FAISS, k: int = 4):
     """
-    Queries the vector store for similar documents using HyDE, loading data on-demand.
+    Queries the vector store for similar documents using HyDE.
     """
     if not vector_store:
         logging.warning("query_vector_store: Vector store not initialized.")
         return []
-
-    # On-demand data loading
-    logging.info("Fetching data from Google Sheet to update vector store before querying.")
-    concept_df = get_concept_data_from_sheet()
-    if not concept_df.empty:
-        documents = []
-        for index, row in concept_df.iterrows():
-            metadata = row.to_dict()
-            page_content = metadata.pop('Concept_Text', '')
-            documents.append(Document(page_content=page_content, metadata=metadata))
-
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        texts = text_splitter.split_documents(documents)
-        vector_store.add_documents(texts)
-        logging.info(f"Vector store updated with {len(texts)} new document chunks.")
-    else:
-        logging.warning("No data fetched from Google Sheet. Querying existing vector store.")
-
 
     if not hasattr(vector_store, 'index_to_docstore_id') or len(vector_store.index_to_docstore_id) <= 1:
         logging.warning("query_vector_store: Vector store may be empty or contain only the 'init' document.")
