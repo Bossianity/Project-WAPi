@@ -317,34 +317,37 @@ def handle_educational_query(text, concepts_df):
     """
     Handles educational queries by searching for concepts and generating a response.
     """
-    text_lower = text.lower()
+    text_lower = text.lower().strip()
 
-    # Simple keyword matching for direct questions
+    # Handle direct questions
     if "how many times" in text_lower and "been tested" in text_lower:
-        # Extract concept from the question
-        match = re.search(r"how many times has (.+?) been tested", text_lower)
-        if match:
-            concept_query = match.group(1).strip()
-            # Search for the concept query in the "Concept_Text" column
-            matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False)]
-            count = len(matching_rows)
-            if count > 0:
-                return f"The concept '{concept_query}' has been tested {count} time(s)."
-            else:
-                return f"The concept '{concept_query}' has not been found in the tested materials."
+        concept_query = re.sub(r"how many times has|been tested", "", text_lower, flags=re.IGNORECASE).strip()
+        # Remove question marks for better matching
+        concept_query = concept_query.replace("?", "")
+        matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False) |
+                                    concepts_df['Tags'].str.lower().str.contains(concept_query, na=False)]
+        count = len(matching_rows)
+        if count > 0:
+            return f"The concept '{concept_query}' has been tested {count} time(s)."
+        else:
+            return f"The concept '{concept_query}' has not been found in the tested materials."
 
     if "is this high yield" in text_lower or "do i need to know this" in text_lower:
-        # Extract concept from the question
-        concept_query = text_lower.replace("is this high yield", "").replace("do i need to know this", "").strip()
-        matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False)]
+        concept_query = re.sub(r"is this high yield|do i need to know this", "", text_lower, flags=re.IGNORECASE).strip()
+        # Remove question marks for better matching
+        concept_query = concept_query.replace("?", "")
+        matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False) |
+                                    concepts_df['Tags'].str.lower().str.contains(concept_query, na=False)]
         if not matching_rows.empty:
             return f"Yes, the concept '{concept_query}' is high yield and has been tested. Here's a summary:\n" + get_summary(matching_rows)
         else:
             return f"No, the concept '{concept_query}' was not found in the tested materials."
 
     # General summarization query
-    matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(text_lower, na=False) |
-                                concepts_df['Tags'].str.lower().str.contains(text_lower, na=False)]
+    # Use regex to search for whole words to improve accuracy
+    search_pattern = r'\b' + re.escape(text_lower) + r'\b'
+    matching_rows = concepts_df[concepts_df['Concept_Text'].str.contains(search_pattern, case=False, na=False, regex=True) |
+                                concepts_df['Tags'].str.contains(search_pattern, case=False, na=False, regex=True)]
 
     if not matching_rows.empty:
         return "Here is a summary of the high-yield facts for your query:\n" + get_summary(matching_rows)
@@ -1022,16 +1025,6 @@ def handle_new_messages():
             if not user_in_interactive_flow and sender in sell_flow_states:
                 # ... (sell_flow_states logic)
                 pass
-
-            if not user_in_interactive_flow and not (sender in sell_flow_states) and body_for_fallback:
-                current_text_for_greeting_check = body_for_fallback.strip().lower()
-                greetings = ["hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "مرحبا", "السلام عليكم", "هلا", "هاي"]
-                is_greeting = any(greet == current_text_for_greeting_check for greet in greetings if current_text_for_greeting_check) or \
-                              any(current_text_for_greeting_check.startswith(greet) for greet in greetings if current_text_for_greeting_check and len(greet) > 2)
-                if is_greeting:
-                    send_initial_greeting_message(sender, language=current_language)
-                    interactive_flow_states[sender] = {'step': 'awaiting_initial_choice', 'language': current_language}
-                    return jsonify(status='success_interactive_started'), 200
 
             if not (sender and body_for_fallback): continue
 
