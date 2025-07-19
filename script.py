@@ -19,10 +19,10 @@ from google.oauth2 import service_account
 import pytz
 import smtplib
 from email.mime.text import MIMEText
-import property_handler
 import dateparser
 
 # Ensure rag_handler.py is in the same directory or accessible via PYTHONPATH
+import property_handler
 from rag_handler import (
     initialize_vector_store,
     process_document,
@@ -36,20 +36,13 @@ from google_drive_handler import (
     get_google_doc_content,
     get_google_sheet_content
 )
-from property_handler import get_sheet2_data
 from outreach_handler import process_outreach_campaign
 from whatsapp_utils import (
     send_whatsapp_message,
     send_whatsapp_image_message,
     set_webhook,
     send_interactive_list_message,
-    send_initial_greeting_message,
-    send_furnished_query_message,
-    send_furnished_apartment_survey_message,
-    send_unfurnished_apartment_survey_message,
-    send_city_selection_message,
-    send_interactive_button_message,
-    CITY_TRANSLATIONS
+    send_interactive_button_message
 )
 from calendar_handler import (
     parse_user_date_input,
@@ -98,24 +91,23 @@ is_globally_paused = False
 paused_conversations = set()
 
 PERSONA_FILE = 'persona.json'
-PERSONA_NAME = "Barq (برق)"
+PERSONA_NAME = "USMLE Step 2 HY Bot"
 BASE_PROMPT_TEMPLATE = (
-    "You are a helpful and friendly assistant from X-BnB. "
-    "Your primary goal is to guide users through options using interactive messages. "
-    "Your tone is polite, professional, and uses a Saudi dialect when the user communicates in Arabic. "
-    "CRITICAL LANGUAGE RULE: Your response MUST ALWAYS be in the SAME language as the user's last message. If the user messages in English, you reply in English. If they message in Arabic, you MUST reply in Saudi dialect. "
-    "If providing information directly (not via interactive message), keep it concise. "
-    "If a user asks a question that can be answered by one of the interactive flow options, try to steer them towards that flow. "
-    "If the query is not covered by an interactive flow, use the provided 'Relevant Information Found' to answer. "
-    "If the context does not sufficiently answer the query, state that you will check for that specific detail and get back to them, appending `[ACTION_NOTIFY_UNANSWERED_QUERY]`. "
+    "You are a helpful and friendly educational bot. "
+    "Your primary goal is to provide high-yield summaries of USMLE Step 2 exam concepts based on a provided Google Sheet. "
+    "Your tone is that of a knowledgeable and encouraging study partner. "
+    "CRITICAL RULE: Your response MUST be based *only* on the information from the provided Google Sheet. Do not add any information from external sources. "
+    "When providing summaries, rephrase the concepts to be more understandable and create a narrative where possible, but the core meaning must remain the same. "
+    "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
+    "If a user asks a question that is not covered in the sheet, state that the information is not available in the provided materials. "
     "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. "
 )
 try:
     with open(PERSONA_FILE) as f:
         p = json.load(f)
-    logging.info(f"Original persona name from {PERSONA_FILE} was '{p.get('name')}'. Script now uses dynamic naming ('Mosaed'/'مساعد') for LLM prompts based on BASE_PROMPT_TEMPLATE.")
+    logging.info(f"Original persona name from {PERSONA_FILE} was '{p.get('name')}'. Script now uses dynamic naming ('EduBot') for LLM prompts based on BASE_PROMPT_TEMPLATE.")
 except Exception as e:
-    logging.warning(f"Could not load {PERSONA_FILE} or parse it: {e}. Using dynamic naming ('Mosaed'/'مساعد') for LLM prompts based on BASE_PROMPT_TEMPLATE.")
+    logging.warning(f"Could not load {PERSONA_FILE} or parse it: {e}. Using dynamic naming ('EduBot') for LLM prompts based on BASE_PROMPT_TEMPLATE.")
 
 AI_MODEL = None
 if OPENAI_API_KEY:
@@ -321,45 +313,95 @@ def get_intent_from_text(text, possible_intents, language='en'):
         return None
 
 
+def handle_educational_query(text, concepts_df):
+    """
+    Handles educational queries by searching for concepts and generating a response.
+    """
+    text_lower = text.lower()
+
+    # Simple keyword matching for direct questions
+    if "how many times" in text_lower and "been tested" in text_lower:
+        # Extract concept from the question
+        match = re.search(r"how many times has (.+?) been tested", text_lower)
+        if match:
+            concept_query = match.group(1).strip()
+            # Search for the concept query in the "Concept_Text" column
+            matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False)]
+            count = len(matching_rows)
+            if count > 0:
+                return f"The concept '{concept_query}' has been tested {count} time(s)."
+            else:
+                return f"The concept '{concept_query}' has not been found in the tested materials."
+
+    if "is this high yield" in text_lower or "do i need to know this" in text_lower:
+        # Extract concept from the question
+        concept_query = text_lower.replace("is this high yield", "").replace("do i need to know this", "").strip()
+        matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False)]
+        if not matching_rows.empty:
+            return f"Yes, the concept '{concept_query}' is high yield and has been tested. Here's a summary:\n" + get_summary(matching_rows)
+        else:
+            return f"No, the concept '{concept_query}' was not found in the tested materials."
+
+    # General summarization query
+    matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(text_lower, na=False) |
+                                concepts_df['Tags'].str.lower().str.contains(text_lower, na=False)]
+
+    if not matching_rows.empty:
+        return "Here is a summary of the high-yield facts for your query:\n" + get_summary(matching_rows)
+    else:
+        return "I could not find any high-yield facts related to your query in the provided materials."
+
+def get_summary(matching_rows):
+    """
+    Generates a summarized response from the matching rows.
+    """
+    summary = ""
+    for _, row in matching_rows.iterrows():
+        concept_text = row['Concept_Text']
+        source_id = row['Source_ID']
+        summary += f"- {concept_text} [{source_id}]\n"
+    return summary
+
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
     if not AI_MODEL: return {'type': 'text', 'content': "AI Model not configured."}
-    analysis_prompt = f"Analyze: '{text}'. JSON: intent ('property_search'/'general_question'), filters (dict/null). Filters: Price_AED, Bedrooms, emirate, city, area, developer, Title."
-    try:
-        analysis_response = AI_MODEL.invoke([HumanMessage(content=analysis_prompt)]); response_text = analysis_response.content.strip()
-        if response_text.startswith('```json'): response_text = response_text[len('```json'):].strip()
-        if response_text.endswith('```'): response_text = response_text[:-len('```')].strip()
-        analysis_json = json.loads(response_text); intent = analysis_json.get("intent"); filters = analysis_json.get("filters")
-    except Exception as e: logging.error(f"LLM Query analysis failed: {e}"); intent = "general_question"; filters = None
-    context_str = ""
-    if (intent == "property_search" or is_property_related_query(text)) and PROPERTY_SHEET_ID:
-        all_properties_df = property_handler.get_sheet_data() # This uses the old sheet
-        if not all_properties_df.empty:
-            filtered_df = property_handler.filter_properties(all_properties_df, filters) if filters else all_properties_df
-            if not filtered_df.empty:
-                context_str = "Relevant Information Found:\n"
-                for _, prop in filtered_df.head(3).iterrows(): # Limit to 3 for brevity
-                    context_str += f"Title: {prop.get('Title', 'N/A')}, Location: {prop.get('area', '')}, {prop.get('city', '')}, Price: {prop.get('Price_AED', 'N/A')} AED\n---\n"
-            else: context_str = "Relevant Information Found:\nNo properties found matching your criteria from our primary list."
-        else: context_str = "Relevant Information Found:\nUnable to access primary property listings."
+
+    concepts_df = property_handler.get_concept_data()
+
+    if not concepts_df.empty:
+        response_text = handle_educational_query(text, concepts_df)
+        return {'type': 'text', 'content': response_text}
     else:
+        # Fallback to general RAG response if the sheet is empty or has issues
         vector_store = current_app.config.get('VECTOR_STORE') or vector_store_rag
+        context_str = ""
         if vector_store:
             retrieved_docs = query_vector_store(text, vector_store, k=3)
-            if retrieved_docs: context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
-    current_language = user_languages.get(sender_id, 'ar')
-    effective_persona_name = "برق" if current_language == 'ar' else "Barq"
-    system_prompt_content = (f"You are {effective_persona_name}. " + BASE_PROMPT_TEMPLATE)
-    messages = [SystemMessage(content=system_prompt_content)]
-    if history_dicts:
-        for item in history_dicts: messages.append(HumanMessage(content=item['parts'][0]) if item['role'] == 'user' else AIMessage(content=item['parts'][0]))
-    messages.append(HumanMessage(content=(context_str + f"\n\nUser Question: {text}" if context_str else text)))
-    for attempt in range(retries):
-        try:
-            resp = AI_MODEL.invoke(messages); raw_llm_output = resp.content.strip()
-            response_text_for_display = raw_llm_output.replace("[ACTION_NOTIFY_UNANSWERED_QUERY]", "").strip()
-            if response_text_for_display: return {'type': 'text', 'content': response_text_for_display}
-        except Exception as e: logging.warning(f"LLM API error attempt {attempt+1}: {e}"); time.sleep(1)
-    return {'type': 'text', 'content': "I am having trouble processing your request."}
+            if retrieved_docs:
+                context_str = "\n\nRelevant Information Found:\n" + "\n".join([doc.page_content for doc in retrieved_docs])
+
+        current_language = user_languages.get(sender_id, 'ar')
+        effective_persona_name = "EduBot"
+        system_prompt_content = (f"You are {effective_persona_name}. " + BASE_PROMPT_TEMPLATE)
+
+        messages = [SystemMessage(content=system_prompt_content)]
+        if history_dicts:
+            for item in history_dicts:
+                messages.append(HumanMessage(content=item['parts'][0]) if item['role'] == 'user' else AIMessage(content=item['parts'][0]))
+
+        messages.append(HumanMessage(content=(context_str + f"\n\nUser Question: {text}" if context_str else text)))
+
+        for attempt in range(retries):
+            try:
+                resp = AI_MODEL.invoke(messages)
+                raw_llm_output = resp.content.strip()
+                response_text_for_display = raw_llm_output.replace("[ACTION_NOTIFY_UNANSWERED_QUERY]", "").strip()
+                if response_text_for_display:
+                    return {'type': 'text', 'content': response_text_for_display}
+            except Exception as e:
+                logging.warning(f"LLM API error attempt {attempt+1}: {e}")
+                time.sleep(1)
+
+        return {'type': 'text', 'content': "I am having trouble processing your request."}
 
 def split_message(text, max_lines=25, max_chars_per_msg=1500): # WhatsApp limits are higher
     lines = text.split('\n')
@@ -653,7 +695,7 @@ def handle_new_messages():
                         send_whatsapp_message(sender, ack_message)
                         pass
                     elif intent == 'choose_another_room':
-                        properties_df = get_sheet2_data()
+                        properties_df = property_handler.get_concept_data()
                         if properties_df.empty:
                             send_whatsapp_message(sender, "Sorry, I couldn't retrieve property information." if current_language == 'en' else "عذراً، لم أتمكن من استرداد معلومات العقارات.")
                             return jsonify(status='error_fetching_sheet2_data'), 200
@@ -837,7 +879,7 @@ def handle_new_messages():
                         return jsonify(status='success_interactive_handled'), 200
 
                     logging.info(f"User {sender} selected city: {selected_title}")
-                    properties_df = get_sheet2_data()
+                    properties_df = property_handler.get_concept_data()
                     if properties_df.empty: send_whatsapp_message(sender, "عذراً، لم أتمكن من استرداد معلومات العقارات." if current_language == 'ar' else "Sorry, couldn't get property info."); return jsonify(status='error_fetching_sheet2_data'), 200
 
                     # Translate city name if the user is interacting in English
@@ -922,7 +964,7 @@ def handle_new_messages():
 
                     # Execute the action if one was determined
                     if action_type and prop_id_to_use:
-                        properties_df = get_sheet2_data()
+                        properties_df = property_handler.get_concept_data()
                         if properties_df.empty:
                             send_whatsapp_message(sender, "Error fetching details."); return jsonify(status='error_fetching_sheet2_for_action'), 200
 
@@ -1029,11 +1071,6 @@ def handle_new_messages():
     except Exception as e:
         logging.exception(f"FATAL Error in webhook processing: {e}")
         return jsonify(status='error', message='Internal Server Error'), 500
-
-def is_property_related_query(text):
-    keywords = ['property', 'properties', 'apartment', 'villa', 'house', 'buy', 'rent', 'lease', 'listing', 'listings', 'available', 'real estate']
-    text_lower = text.lower()
-    return any(keyword in text_lower for keyword in keywords)
 
 if __name__ == '__main__':
     set_webhook()
