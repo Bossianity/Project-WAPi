@@ -3,12 +3,13 @@ import logging
 import json
 import shutil
 import time
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 import google.api_core.exceptions
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
@@ -16,22 +17,54 @@ from langchain_openai import ChatOpenAI
 
 # --- Global Constants ---
 VECTOR_STORE_PATH = "faiss_index"
-EMBEDDING_MODEL_NAME = "models/embedding-001" # Gemini embedding model
+EMBEDDING_MODEL_NAME = "models/embedding-001"
 PROCESSED_FILES_LOG_PATH = os.path.join(VECTOR_STORE_PATH, "processed_files.log")
 
-
-# Set up basic logging
+# --- Setup basic logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def get_google_sheet_data():
+    """
+    Fetches all data from the Google Sheet specified in the environment variables.
+    """
+    if os.getenv('TEST_ENV') == 'true':
+        return [
+            {'col1': 'data1', 'col2': 'data2'},
+            {'col1': 'data3', 'col2': 'data4'}
+        ]
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets',
+                 "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
+
+        creds_json = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
+        if not creds_json:
+            logging.error("GOOGLE_SHEETS_CREDENTIALS environment variable not set.")
+            return None
+
+        creds_dict = json.loads(creds_json)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+
+        sheet_id = os.getenv('CONCEPT_SHEET_ID')
+        sheet_name = os.getenv('CONCEPT_SHEET_NAME')
+
+        if not sheet_id or not sheet_name:
+            logging.error("CONCEPT_SHEET_ID or CONCEPT_SHEET_NAME not set in environment variables.")
+            return None
+
+        sheet = client.open_by_key(sheet_id).worksheet(sheet_name)
+        return sheet.get_all_records()
+    except Exception as e:
+        logging.error(f"Error accessing Google Sheet: {e}", exc_info=True)
+        return None
 
 def initialize_vector_store():
     """
-    Initializes or loads a FAISS vector store with a retry mechanism
-    to handle potential startup timeouts.
+    Initializes or loads a FAISS vector store, ensuring it's populated with Google Sheet data.
     """
     gemini_api_key_local = os.getenv('GEMINI_API_KEY')
     if not gemini_api_key_local:
-        logging.error("GEMINI_API_KEY environment variable not set. Cannot initialize vector store.")
+        logging.error("GEMINI_API_KEY not set. Cannot initialize vector store.")
         return None
 
     try:
@@ -40,49 +73,57 @@ def initialize_vector_store():
         logging.error(f"Failed to initialize GoogleGenerativeAIEmbeddings: {e}", exc_info=True)
         return None
 
-    # Logic for forcing a re-index remains the same
     force_reindex = os.getenv('FORCE_REINDEX', 'false').lower() == 'true'
     if force_reindex and os.path.exists(VECTOR_STORE_PATH):
-        logging.info(f"FORCE_REINDEX is true. Removing existing vector store at {VECTOR_STORE_PATH}.")
-        try:
-            shutil.rmtree(VECTOR_STORE_PATH)
-        except Exception as e:
-            logging.error(f"Error removing directory {VECTOR_STORE_PATH}: {e}", exc_info=True)
+        logging.info("FORCE_REINDEX is true. Removing existing vector store.")
+        shutil.rmtree(VECTOR_STORE_PATH)
 
     if not os.path.exists(VECTOR_STORE_PATH):
         os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
+        logging.info("No existing index found. Creating new FAISS index and populating from Google Sheet.")
 
-    # Attempt to load an existing index first
-    if os.path.exists(os.path.join(VECTOR_STORE_PATH, "index.faiss")):
+        sheet_data = get_google_sheet_data()
+        if not sheet_data:
+            logging.error("Failed to fetch Google Sheet data. Initializing an empty vector store.")
+            faiss_store = FAISS.from_texts(["init"], embeddings_object)
+            faiss_store.save_local(VECTOR_STORE_PATH)
+            return faiss_store
+
+        # Process sheet data into documents
+        documents = []
+        for row in sheet_data:
+            content = " ".join(str(value) for value in row.values())
+            documents.append(Document(page_content=content, metadata={"source": "google_sheet"}))
+
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        texts = text_splitter.split_documents(documents)
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                faiss_store = FAISS.from_documents(texts, embeddings_object)
+                faiss_store.save_local(VECTOR_STORE_PATH)
+                logging.info("New FAISS index created and populated from Google Sheet successfully.")
+                return faiss_store
+            except google.api_core.exceptions.DeadlineExceeded as e:
+                logging.warning(f"Attempt {attempt + 1}/{max_retries} failed: {e}. Retrying...")
+                time.sleep(2 ** attempt)
+            except Exception as e:
+                logging.error(f"An unexpected error occurred on attempt {attempt + 1}/{max_retries}: {e}", exc_info=True)
+                time.sleep(2 ** attempt)
+
+        logging.critical("All attempts to create and populate FAISS index failed.")
+        return None
+
+    else:
         try:
             logging.info(f"Attempting to load existing FAISS index from {VECTOR_STORE_PATH}")
             faiss_store = FAISS.load_local(VECTOR_STORE_PATH, embeddings_object, allow_dangerous_deserialization=True)
             logging.info("FAISS index loaded successfully.")
             return faiss_store
         except Exception as e:
-            logging.error(f"Failed to load existing FAISS index: {e}. Will attempt to create a new one.", exc_info=True)
-
-    # --- NEW: Create a new index with a retry loop ---
-    logging.info("No existing index found. Creating new FAISS index...")
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            # This is the line that was failing.
-            faiss_store = FAISS.from_texts(["init"], embeddings_object)
-            faiss_store.save_local(VECTOR_STORE_PATH)
-            logging.info("New FAISS index created and saved successfully.")
-            return faiss_store
-        except google.api_core.exceptions.DeadlineExceeded as e:
-            logging.warning(f"Attempt {attempt + 1}/{max_retries} failed with DeadlineExceeded: {e}. Retrying in {2 ** attempt} seconds...")
-            time.sleep(2 ** attempt) # Exponential backoff
-        except Exception as e:
-            # Catch other potential errors during creation
-            logging.error(f"An unexpected error occurred on attempt {attempt + 1}/{max_retries} while creating index: {e}", exc_info=True)
-            time.sleep(2 ** attempt)
-
-    # If all retries fail
-    logging.critical("All attempts to create a new FAISS index failed. RAG system will be unavailable.")
-    return None
+            logging.error(f"Failed to load existing FAISS index: {e}. Consider re-indexing.", exc_info=True)
+            return None
 
 
 # --- Processed Files Log Management ---
