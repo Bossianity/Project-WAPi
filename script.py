@@ -319,10 +319,12 @@ def handle_educational_query(text, concepts_df):
     """
     text_lower = text.lower().strip()
 
+    # Tokenize the user's query
+    query_tokens = re.findall(r'\b\w+\b', text_lower)
+
     # Handle direct questions
     if "how many times" in text_lower and "been tested" in text_lower:
         concept_query = re.sub(r"how many times has|been tested", "", text_lower, flags=re.IGNORECASE).strip()
-        # Remove question marks for better matching
         concept_query = concept_query.replace("?", "")
         matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False) |
                                     concepts_df['Tags'].str.lower().str.contains(concept_query, na=False)]
@@ -334,7 +336,6 @@ def handle_educational_query(text, concepts_df):
 
     if "is this high yield" in text_lower or "do i need to know this" in text_lower:
         concept_query = re.sub(r"is this high yield|do i need to know this", "", text_lower, flags=re.IGNORECASE).strip()
-        # Remove question marks for better matching
         concept_query = concept_query.replace("?", "")
         matching_rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(concept_query, na=False) |
                                     concepts_df['Tags'].str.lower().str.contains(concept_query, na=False)]
@@ -344,10 +345,14 @@ def handle_educational_query(text, concepts_df):
             return f"No, the concept '{concept_query}' was not found in the tested materials."
 
     # General summarization query
-    # Use regex to search for whole words to improve accuracy
-    search_pattern = r'\b' + re.escape(text_lower) + r'\b'
-    matching_rows = concepts_df[concepts_df['Concept_Text'].str.contains(search_pattern, case=False, na=False, regex=True) |
-                                concepts_df['Tags'].str.contains(search_pattern, case=False, na=False, regex=True)]
+    matching_rows = pd.DataFrame()
+    for token in query_tokens:
+        rows = concepts_df[concepts_df['Concept_Text'].str.lower().str.contains(token, na=False) |
+                           concepts_df['Tags'].str.lower().str.contains(token, na=False)]
+        matching_rows = pd.concat([matching_rows, rows])
+
+    # Remove duplicate rows
+    matching_rows = matching_rows.drop_duplicates()
 
     if not matching_rows.empty:
         return "Here is a summary of the high-yield facts for your query:\n" + get_summary(matching_rows)
