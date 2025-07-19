@@ -350,12 +350,10 @@ def rag_pipeline(query: str, sender_id: str):
 
     try:
         resp = AI_MODEL.invoke(messages)
-        if isinstance(resp, list) and resp:
-            # Assuming the first message in the list is the one we want
-            return resp[0].content.strip()
-        elif hasattr(resp, 'content'):
+        if isinstance(resp, AIMessage):
             return resp.content.strip()
         else:
+            # Fallback for unexpected response types
             return str(resp).strip()
     except Exception as e:
         logging.error(f"Error during RAG pipeline summary generation: {e}", exc_info=True)
