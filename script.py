@@ -350,7 +350,13 @@ def rag_pipeline(query: str, sender_id: str):
 
     try:
         resp = AI_MODEL.invoke(messages)
-        return resp.content.strip()
+        if isinstance(resp, list) and resp:
+            # Assuming the first message in the list is the one we want
+            return resp[0].content.strip()
+        elif hasattr(resp, 'content'):
+            return resp.content.strip()
+        else:
+            return str(resp).strip()
     except Exception as e:
         logging.error(f"Error during RAG pipeline summary generation: {e}", exc_info=True)
         return "I am having trouble processing your request."
