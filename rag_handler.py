@@ -256,9 +256,11 @@ def process_google_document_text(document_id: str, text_content: str, vector_sto
         logging.error(f"Error processing Google document text for ID '{document_id}': {e}", exc_info=True)
         return False
 
+from langchain_core.runnables import RunnableSequence
+
 def get_hyde_llm_chain():
     """
-    Creates an LLMChain for the HyDE technique.
+    Creates a RunnableSequence for the HyDE technique.
     """
     prompt_template = """
     Please write a passage to answer the question
@@ -266,8 +268,8 @@ def get_hyde_llm_chain():
     Passage:
     """
     prompt = PromptTemplate(input_variables=["question"], template=prompt_template)
-    llm = ChatOpenAI(model_name="o3-mini", temperature=0)
-    return LLMChain(llm=llm, prompt=prompt)
+    llm = ChatOpenAI(model_name="o3-mini")
+    return RunnableSequence(prompt, llm)
 
 # --- Querying ---
 def query_vector_store(query_text: str, vector_store: FAISS, k: int = 4):
@@ -285,11 +287,11 @@ def query_vector_store(query_text: str, vector_store: FAISS, k: int = 4):
     try:
         # 1. Generate a hypothetical document
         hyde_chain = get_hyde_llm_chain()
-        hypothetical_document = hyde_chain.run(query_text)
+        hypothetical_document = hyde_chain.invoke({"question": query_text})
 
         # 2. Use the hypothetical document for similarity search
         logging.info(f"Performing similarity search for query: '{query_text}' with k={k} using HyDE")
-        results = vector_store.similarity_search(hypothetical_document, k=k)
+        results = vector_store.similarity_search(hypothetical_document.content, k=k)
         logging.info(f"Found {len(results)} results.")
         return results
     except Exception as e:
