@@ -374,11 +374,11 @@ def rag_pipeline(query: str, sender_id: str):
 
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
     if not AI_MODEL:
-        return "AI Model not configured."
+        return {'type': 'text', 'content': "AI Model not configured."}
 
     # All educational queries will now go through the RAG pipeline
     response_text = rag_pipeline(text, sender_id)
-    return response_text
+    return {'type': 'text', 'content': response_text}
 
 def split_message(text, max_lines=25, max_chars_per_msg=1500): # WhatsApp limits are higher
     lines = text.split('\n')
