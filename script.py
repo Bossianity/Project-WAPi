@@ -330,18 +330,25 @@ def rag_pipeline(query: str, sender_id: str):
         return "I could not find any high-yield facts related to your query in the provided materials."
 
     # 2. Generate a summary
-    context_str = "\n\n".join([doc.page_content for doc in retrieved_docs])
+    context_parts = []
+    for doc in retrieved_docs:
+        source_id = doc.metadata.get('Source_ID', 'Unknown')
+        context_parts.append(f"Fact from {source_id}: {doc.page_content}")
+    context_str = "\n\n".join(context_parts)
+
 
     system_prompt_content = (
-        "You are a helpful and friendly educational bot. "
-        "Your primary goal is to provide high-yield summaries of USMLE Step 2 exam concepts based on the provided text. "
-        "Your tone is that of a knowledgeable and encouraging study partner. "
-        "CRITICAL RULE: Your response MUST be based *only* on the information from the provided text. Do not add any information from external sources. "
-        "When providing summaries, rephrase the concepts to be more understandable and create a narrative where possible, but the core meaning must remain the same. "
-        "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
-        "If the user's question cannot be answered from the text, state that the information is not available in the provided materials. "
-        "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only."
-    )
+    "You are a USMLE Step 2 tutor. Your goal is to help students prepare for their exams. "
+    "Take the user's question and the provided facts, and explain the concepts in a clear, concise, and educational manner. "
+    "Frame your answer as if you are a tutor explaining a high-yield topic. "
+    "For example, you can start with 'Contraception is a high-yield topic that gets tested a lot.' "
+    "Then, explain how the concepts are tested. For example, 'You need to know that barrier methods are considered safe in women with cardiovascular risk factors like smoking because they have no hormonal effects. Therefore, if you see a question with a person with these risk factors, give them barrier contraception.' "
+    "CRITICAL RULE: Your response MUST be based *only* on the provided facts. Do not add any external information. "
+    "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
+    "If the user's question cannot be answered from the facts, state that the information is not available in the provided materials. "
+    "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only."
+)
+
 
     messages = [
         SystemMessage(content=system_prompt_content),
@@ -367,11 +374,11 @@ def rag_pipeline(query: str, sender_id: str):
 
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
     if not AI_MODEL:
-        return {'type': 'text', 'content': "AI Model not configured."}
+        return "AI Model not configured."
 
     # All educational queries will now go through the RAG pipeline
     response_text = rag_pipeline(text, sender_id)
-    return {'type': 'text', 'content': response_text}
+    return response_text
 
 def split_message(text, max_lines=25, max_chars_per_msg=1500): # WhatsApp limits are higher
     lines = text.split('\n')
