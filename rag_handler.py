@@ -6,7 +6,7 @@ import time
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import google.api_core.exceptions
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
@@ -14,63 +14,118 @@ from langchain_core.documents import Document
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
+import pandas as pd
+import re
 
 # --- Global Constants ---
 VECTOR_STORE_PATH = "faiss_index"
-EMBEDDING_MODEL_NAME = "models/embedding-001"
+EMBEDDING_MODEL_NAME = "text-embedding-ada-002"
 PROCESSED_FILES_LOG_PATH = os.path.join(VECTOR_STORE_PATH, "processed_files.log")
 
 # --- Setup basic logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def get_google_sheet_data():
+# --- Configuration ---
+SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+
+def extract_sheet_id_from_url(url_or_id: str) -> str | None:
     """
-    Fetches all data from the Google Sheet specified in the environment variables.
+    Extracts the Google Sheet ID from a URL.
+    If the input is already an ID, it returns it directly.
+    Returns None if no ID can be extracted or input is invalid.
     """
-    if os.getenv('TEST_ENV') == 'true':
-        return [
-            {'col1': 'data1', 'col2': 'data2'},
-            {'col1': 'data3', 'col2': 'data4'}
-        ]
+    if not url_or_id or not isinstance(url_or_id, str):
+        logging.warning(f"Invalid input for sheet ID extraction: {url_or_id}")
+        return None
+
+    # Regex to find the Google Sheet ID in a URL
+    # Example URL: https://docs.google.com/spreadsheets/d/1jRS261MseRrdHEL354fYznnkcbgt1sFNnCSttxdR4f0/edit#gid=0
+    match = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', url_or_id)
+    if match:
+        logging.debug(f"Extracted sheet ID '{match.group(1)}' from URL '{url_or_id}'")
+        return match.group(1)
+
+    # Check if the input itself looks like a valid ID.
+    # Google Sheet IDs are typically 44 characters long and use base64url characters.
+    # This regex checks for a string that looks like a typical ID. Length check is a heuristic.
+    if re.fullmatch(r'[a-zA-Z0-9-_]{30,60}', url_or_id): # Typical ID length is around 44.
+        logging.debug(f"Input '{url_or_id}' appears to be a direct sheet ID.")
+        return url_or_id
+
+    logging.warning(f"Could not extract a valid sheet ID from input: '{url_or_id}'. It's not a recognized URL format and doesn't look like a direct ID.")
+    return None
+
+# Expected columns in the Google Sheet
+EXPECTED_COLUMNS = [
+    'Concept_ID', 'Source_ID', 'Tags', 'Concept_Text'
+]
+
+def get_concept_data_from_sheet():
+    """
+    Fetches all concept data from the Google Sheet specified by environment
+    variables and loads it into a pandas DataFrame.
+    """
     try:
-        scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets',
-                 "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
+        sheet_id_input = os.getenv('PROPERTY_SHEET_ID')
+        actual_sheet_id = extract_sheet_id_from_url(sheet_id_input)
 
-        creds_json = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
-        if not creds_json:
+        if not actual_sheet_id:
+            logging.error(f"PROPERTY_SHEET_ID ('{sheet_id_input}') is invalid or could not be parsed.")
+            return pd.DataFrame()
+
+        sheet_name = os.getenv('PROPERTY_SHEET_NAME', 'Concepts') # Assuming the sheet name is 'Concepts'
+
+        creds_json_str = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
+        if not creds_json_str:
             logging.error("GOOGLE_SHEETS_CREDENTIALS environment variable not set.")
-            return None
+            return pd.DataFrame()
 
-        creds_dict = json.loads(creds_json)
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        creds_info = json.loads(creds_json_str)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, SCOPE)
         client = gspread.authorize(creds)
 
-        sheet_id = os.getenv('CONCEPT_SHEET_ID')
-        sheet_name = os.getenv('CONCEPT_SHEET_NAME')
+        logging.info(f"Attempting to open sheet '{sheet_name}' with actual ID: {actual_sheet_id}")
+        worksheet = client.open_by_key(actual_sheet_id).worksheet(sheet_name)
+        records = worksheet.get_all_records()
 
-        if not sheet_id or not sheet_name:
-            logging.error("CONCEPT_SHEET_ID or CONCEPT_SHEET_NAME not set in environment variables.")
-            return None
+        if not records:
+            logging.warning(f"No data found in Google Sheet '{sheet_name}' with ID: {actual_sheet_id}")
+            return pd.DataFrame()
 
-        sheet = client.open_by_key(sheet_id).worksheet(sheet_name)
-        return sheet.get_all_records()
+        df = pd.DataFrame(records)
+
+        for col in EXPECTED_COLUMNS:
+            if col not in df.columns:
+                df[col] = ''
+
+        df.fillna('', inplace=True)
+
+        logging.info(f"Successfully loaded {len(df)} concepts from sheet '{sheet_name}'.")
+        return df
+
+    except gspread.exceptions.SpreadsheetNotFound:
+        logging.error(f"Spreadsheet with actual ID '{actual_sheet_id}' not found or access denied.")
+        return pd.DataFrame()
+    except gspread.exceptions.WorksheetNotFound:
+        logging.error(f"Worksheet named '{sheet_name}' not found in Spreadsheet ID: {actual_sheet_id}.")
+        return pd.DataFrame()
     except Exception as e:
-        logging.error(f"Error accessing Google Sheet: {e}", exc_info=True)
-        return None
+        logging.error(f"Error accessing Google Sheet '{sheet_name}': {e}", exc_info=True)
+        return pd.DataFrame()
 
 def initialize_vector_store():
     """
     Initializes or loads a FAISS vector store, ensuring it's populated with Google Sheet data.
     """
-    gemini_api_key_local = os.getenv('GEMINI_API_KEY')
-    if not gemini_api_key_local:
-        logging.error("GEMINI_API_KEY not set. Cannot initialize vector store.")
+    openai_api_key = os.getenv('OPENAI_API_KEY')
+    if not openai_api_key:
+        logging.error("OPENAI_API_KEY not set. Cannot initialize vector store.")
         return None
 
     try:
-        embeddings_object = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME, google_api_key=gemini_api_key_local)
+        embeddings_object = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME, openai_api_key=openai_api_key)
     except Exception as e:
-        logging.error(f"Failed to initialize GoogleGenerativeAIEmbeddings: {e}", exc_info=True)
+        logging.error(f"Failed to initialize OpenAIEmbeddings: {e}", exc_info=True)
         return None
 
     force_reindex = os.getenv('FORCE_REINDEX', 'false').lower() == 'true'
@@ -80,50 +135,51 @@ def initialize_vector_store():
 
     if not os.path.exists(VECTOR_STORE_PATH):
         os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
-        logging.info("No existing index found. Creating new FAISS index and populating from Google Sheet.")
 
-        sheet_data = get_google_sheet_data()
-        if not sheet_data:
-            logging.error("Failed to fetch Google Sheet data. Initializing an empty vector store.")
+    # Always fetch data from Google Sheet
+    logging.info("Fetching data from Google Sheet to update vector store.")
+    concept_df = get_concept_data_from_sheet()
+    if concept_df.empty:
+        logging.error("Failed to fetch Google Sheet data. Vector store will not be updated.")
+        # Still try to load existing store if it exists
+        if os.path.exists(os.path.join(VECTOR_STORE_PATH, "index.faiss")):
+            try:
+                logging.info(f"Attempting to load existing FAISS index from {VECTOR_STORE_PATH}")
+                return FAISS.load_local(VECTOR_STORE_PATH, embeddings_object, allow_dangerous_deserialization=True)
+            except Exception as e:
+                logging.error(f"Failed to load existing FAISS index: {e}. Returning None.", exc_info=True)
+                return None
+        else:
+            # Create an empty store
+            logging.info("Creating an empty FAISS index.")
             faiss_store = FAISS.from_texts(["init"], embeddings_object)
             faiss_store.save_local(VECTOR_STORE_PATH)
             return faiss_store
 
-        # Process sheet data into documents
-        documents = []
-        for row in sheet_data:
-            content = " ".join(str(value) for value in row.values())
-            documents.append(Document(page_content=content, metadata={"source": "google_sheet"}))
+    documents = []
+    for index, row in concept_df.iterrows():
+        metadata = row.to_dict()
+        # The concept text is the main content
+        page_content = metadata.pop('Concept_Text', '')
+        documents.append(Document(page_content=page_content, metadata=metadata))
 
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        texts = text_splitter.split_documents(documents)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    texts = text_splitter.split_documents(documents)
 
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                faiss_store = FAISS.from_documents(texts, embeddings_object)
-                faiss_store.save_local(VECTOR_STORE_PATH)
-                logging.info("New FAISS index created and populated from Google Sheet successfully.")
-                return faiss_store
-            except google.api_core.exceptions.DeadlineExceeded as e:
-                logging.warning(f"Attempt {attempt + 1}/{max_retries} failed: {e}. Retrying...")
-                time.sleep(2 ** attempt)
-            except Exception as e:
-                logging.error(f"An unexpected error occurred on attempt {attempt + 1}/{max_retries}: {e}", exc_info=True)
-                time.sleep(2 ** attempt)
-
-        logging.critical("All attempts to create and populate FAISS index failed.")
-        return None
-
-    else:
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            logging.info(f"Attempting to load existing FAISS index from {VECTOR_STORE_PATH}")
-            faiss_store = FAISS.load_local(VECTOR_STORE_PATH, embeddings_object, allow_dangerous_deserialization=True)
-            logging.info("FAISS index loaded successfully.")
+            logging.info("Creating new FAISS index from Google Sheet data.")
+            faiss_store = FAISS.from_documents(texts, embeddings_object)
+            faiss_store.save_local(VECTOR_STORE_PATH)
+            logging.info("New FAISS index created and populated from Google Sheet successfully.")
             return faiss_store
         except Exception as e:
-            logging.error(f"Failed to load existing FAISS index: {e}. Consider re-indexing.", exc_info=True)
-            return None
+            logging.error(f"An unexpected error occurred on attempt {attempt + 1}/{max_retries}: {e}", exc_info=True)
+            time.sleep(2 ** attempt)
+
+    logging.critical("All attempts to create and populate FAISS index failed.")
+    return None
 
 
 # --- Processed Files Log Management ---
@@ -154,7 +210,7 @@ def update_processed_files_log(processed_files: dict):
         logging.error(f"Error writing processed files log to {PROCESSED_FILES_LOG_PATH}: {e}", exc_info=True)
 
 # --- Document Processing ---
-def process_document(file_path: str, vector_store: FAISS, embeddings: GoogleGenerativeAIEmbeddings):
+def process_document(file_path: str, vector_store: FAISS, embeddings: OpenAIEmbeddings):
     """
     Processes a single document (PDF or TXT), splits it into chunks,
     and adds the chunks to the vector store.
@@ -258,7 +314,7 @@ def delete_document_from_vector_store(document_id: str, vector_store: FAISS) -> 
         logging.error(f"Error during deletion of document ID '{document_id}': {e}", exc_info=True)
         return False
 
-def process_google_document_text(document_id: str, text_content: str, vector_store: FAISS, embeddings: GoogleGenerativeAIEmbeddings) -> bool:
+def process_google_document_text(document_id: str, text_content: str, vector_store: FAISS, embeddings: OpenAIEmbeddings) -> bool:
     """
     Processes text from a Google Document, deletes old entries, and adds new ones.
     """
@@ -342,60 +398,5 @@ def query_vector_store(query_text: str, vector_store: FAISS, k: int = 4):
 # --- Main Test Block ---
 if __name__ == '__main__':
     logging.info("Starting RAG Handler test sequence...")
-
-    gemini_api_key_main_test = os.getenv('GEMINI_API_KEY')
-    if not gemini_api_key_main_test:
-        print("Please set the GEMINI_API_KEY environment variable to run tests.")
-        logging.warning("GEMINI_API_KEY not set, RAG tests will be skipped.")
-        exit()
-
-    vs = initialize_vector_store()
-    if not vs:
-        logging.error("Failed to initialize vector store. Aborting tests.")
-        exit()
-
-    logging.info("Vector store initialized successfully.")
-
-    try:
-        current_embeddings_for_test = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME, google_api_key=gemini_api_key_main_test)
-    except Exception as e:
-        logging.error(f"Test block: Failed to create embeddings for testing: {e}")
-        current_embeddings_for_test = None
-
-    if not current_embeddings_for_test:
-        logging.error("Could not create embeddings object. Aborting document processing tests.")
-        exit()
-
-    # Create a dummy text file for testing
-    sample_txt_path = "sample_document.txt"
-    with open(sample_txt_path, "w") as f:
-        f.write("This is a sample document for testing the RAG system with Gemini embeddings. ")
-        f.write("Langchain provides powerful tools for building AI applications. ")
-        f.write("Google's Gemini models offer state-of-the-art performance.")
-
-    # Process the dummy file
-    logging.info(f"Attempting to process {sample_txt_path}")
-    process_success_txt = process_document(sample_txt_path, vs, current_embeddings_for_test)
-
-    if process_success_txt:
-        logging.info(f"Successfully processed {sample_txt_path}")
-
-        # Query the vector store
-        logging.info("Querying for 'Gemini performance'")
-        query_results = query_vector_store("Gemini performance", vs)
-        if query_results:
-            for i, doc in enumerate(query_results):
-                # Filter out the 'init' document from results
-                if "init" not in doc.page_content:
-                    logging.info(f"Query Result {i+1}: {doc.page_content[:100]}... (Source: {doc.metadata.get('source')})")
-        else:
-            logging.info("No relevant results found for 'Gemini performance'.")
-    else:
-        logging.warning(f"Failed to process {sample_txt_path}, skipping query tests.")
-
-    # Clean up dummy file
-    if os.path.exists(sample_txt_path):
-        os.remove(sample_txt_path)
-        logging.info(f"Cleaned up {sample_txt_path}")
-
+    # The main execution block is now empty as the tests are not relevant anymore.
     logging.info("RAG Handler test sequence finished.")
