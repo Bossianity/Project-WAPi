@@ -346,7 +346,7 @@ def rag_pipeline(query: str, sender_id: str):
     "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
     "If the user's question cannot be answered from the facts, state that the information is not available in the provided materials. "
     "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. Do not include any code snippets like {'type': 'text', 'text': ...} in your response."
-)
+    )
 
 
     messages = [
@@ -356,17 +356,26 @@ def rag_pipeline(query: str, sender_id: str):
 
     try:
         resp = AI_MODEL.invoke(messages)
-        if isinstance(resp, AIMessage):
-            # Handle both string and list content
+
+        # FIX: Handle cases where the response is a dictionary
+        if isinstance(resp, dict):
+            # Based on your example, the text is in the 'text' key.
+            # We also check for 'content' as a common alternative.
+            text_content = resp.get('text') or resp.get('content')
+            if text_content:
+                return str(text_content).strip()
+
+        # Original handling for AIMessage objects
+        elif isinstance(resp, AIMessage):
             if isinstance(resp.content, list):
-                # Join list elements into a single string
                 return " ".join(map(str, resp.content)).strip()
             else:
-                # If it's already a string, just strip it
                 return str(resp.content).strip()
-        else:
-            # Fallback for unexpected response types
-            return str(resp).strip()
+
+        # Fallback for any other unexpected format
+        logging.warning(f"Unexpected LLM response format: {type(resp)}. Content: {resp}")
+        return str(resp).strip()
+
     except Exception as e:
         logging.error(f"Error during RAG pipeline summary generation: {e}", exc_info=True)
         return "I am having trouble processing your request."
