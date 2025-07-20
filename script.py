@@ -336,18 +336,17 @@ def rag_pipeline(query: str, sender_id: str):
         context_parts.append(f"Fact from {source_id}: {doc.page_content}")
     context_str = "\n\n".join(context_parts)
 
-
     system_prompt_content = (
-    "You are a USMLE Step 2 tutor. Your goal is to help students understand high-yield concepts for their NBME and CMS forms. "
-    "Take the user's question and the provided facts, and explain the concepts in a clear, concise, and educational manner, as a tutor would. "
-    "Instead of saying 'The provided facts focus on...', start with phrases like 'The NBME likes to test on...' or 'Contraception is a high-yield topic that gets tested a lot on the boards...'. "
-    "Then, explain how the concepts are tested. For example, 'You need to know that barrier methods are considered safe in women with cardiovascular risk factors like smoking because they have no hormonal effects. Therefore, if you see a question with a person with these risk factors, give them barrier contraception.' "
-    "CRITICAL RULE: Your response MUST be based *only* on the provided facts. Do not add any external information. "
-    "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
-    "If the user's question cannot be answered from the facts, state that the information is not available in the provided materials. "
-    "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. Do not include any code snippets like {'type': 'text', 'text': ...} in your response."
+        "You are a USMLE Step 2 tutor. Your goal is to help students understand high-yield concepts for their NBME and CMS forms. "
+        "Take the user's question and the provided facts, and explain the concepts in a clear, concise, and educational manner, as a tutor would. "
+        "Instead of saying 'The provided facts focus on...', start with phrases like 'The NBME likes to test on...' or 'Contraception is a high-yield topic that gets tested a lot on the boards...'. "
+        "Then, explain how the concepts are tested. For example, 'You need to know that barrier methods are considered safe in women with cardiovascular risk factors like smoking because they have no hormonal effects. Therefore, if you see a question with a person with these risk factors, give them barrier contraception.' "
+        "CRITICAL RULE: Your response MUST be based *only* on the provided facts. Do not add any external information. "
+        "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
+        "If the user's question cannot be answered from the facts, state that the information is not available in the provided materials. "
+        "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. Do not include any code snippets or dictionary formatting in your response. "
+        "Respond with plain text only, no JSON or dictionary structures."
     )
-
 
     messages = [
         SystemMessage(content=system_prompt_content),
@@ -357,30 +356,55 @@ def rag_pipeline(query: str, sender_id: str):
     try:
         resp = AI_MODEL.invoke(messages)
 
-        # FIX: Handle cases where the response is a dictionary
-        if isinstance(resp, dict):
-            # Based on your example, the text is in the 'text' key.
-            # We also check for 'content' as a common alternative.
-            text_content = resp.get('text') or resp.get('content')
-            if text_content:
-                return str(text_content).strip()
-
-        # Original handling for AIMessage objects
-        elif isinstance(resp, AIMessage):
-            if isinstance(resp.content, list):
-                return " ".join(map(str, resp.content)).strip()
+        # Handle different response formats
+        response_text = ""
+        
+        if hasattr(resp, 'content'):
+            # Standard AIMessage response
+            if isinstance(resp.content, str):
+                response_text = resp.content
+            elif isinstance(resp.content, list):
+                # Handle list of content blocks
+                text_parts = []
+                for item in resp.content:
+                    if isinstance(item, dict):
+                        text_parts.append(item.get('text', str(item)))
+                    else:
+                        text_parts.append(str(item))
+                response_text = " ".join(text_parts)
             else:
-                return str(resp.content).strip()
+                response_text = str(resp.content)
+        elif isinstance(resp, dict):
+            # Handle dictionary responses (like from o3-mini with reasoning)
+            if 'text' in resp:
+                response_text = resp['text']
+            elif 'content' in resp:
+                response_text = resp['content']
+            else:
+                # Try to extract text from any nested structures
+                response_text = str(resp)
+        else:
+            # Fallback for any other format
+            response_text = str(resp)
 
-        # Fallback for any other unexpected format
-        logging.warning(f"Unexpected LLM response format: {type(resp)}. Content: {resp}")
-        return str(resp).strip()
+        # Clean up the response to ensure it's plain text
+        response_text = response_text.strip()
+        
+        # Remove any remaining dictionary-like structures that might have leaked through
+        import re
+        # Remove patterns like {'type': 'text', 'text': '...'}
+        response_text = re.sub(r'\{[^}]*\'type\'[^}]*\'text\'[^}]*\}', '', response_text)
+        # Remove any JSON-like structures
+        response_text = re.sub(r'\{[^}]*\}', '', response_text)
+        
+        if not response_text or len(response_text.strip()) == 0:
+            return "I am having trouble processing your request."
+            
+        return response_text
 
     except Exception as e:
         logging.error(f"Error during RAG pipeline summary generation: {e}", exc_info=True)
         return "I am having trouble processing your request."
-
-
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
     if not AI_MODEL:
         return {'type': 'text', 'content': "AI Model not configured."}
