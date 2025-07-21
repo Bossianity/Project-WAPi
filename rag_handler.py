@@ -90,7 +90,14 @@ def get_concept_data_from_sheet():
 
         logging.info(f"Attempting to open sheet '{sheet_name}' with actual ID: {actual_sheet_id}")
         worksheet = client.open_by_key(actual_sheet_id).worksheet(sheet_name)
-        records = worksheet.get_all_records()
+
+        # Manually fetch and clean headers
+        header = worksheet.row_values(1)
+        # Filter out empty strings from the header
+        cleaned_headers = [h for h in header if h]
+
+        # Fetch records using the cleaned headers
+        records = worksheet.get_all_records(expected_headers=cleaned_headers)
 
         if not records:
             logging.warning(f"No data found in Google Sheet '{sheet_name}' with ID: {actual_sheet_id}")
@@ -375,7 +382,7 @@ def get_hyde_llm_chain():
     return RunnableSequence(prompt, llm)
 
 # --- Querying ---
-def query_vector_store(query_text: str, vector_store: FAISS, k: int = 4):
+def query_vector_store(query_text: str, vector_store: FAISS, k: int = 10):
     """
     Queries the vector store for similar documents using HyDE.
     """
