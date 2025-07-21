@@ -382,7 +382,7 @@ def get_hyde_llm_chain():
     return RunnableSequence(prompt, llm)
 
 # --- Querying ---
-def query_vector_store(query_text: str, vector_store: FAISS, k: int = 4):
+def query_vector_store(query_text: str, vector_store: FAISS, k: int = 10):
     """
     Queries the vector store for similar documents using HyDE.
     """
