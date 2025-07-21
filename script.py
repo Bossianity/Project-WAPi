@@ -325,7 +325,7 @@ def rag_pipeline(query: str, sender_id: str):
         return "The educational database is currently unavailable. Please try again later."
 
     # 1. Retrieve relevant concepts
-    retrieved_docs = query_vector_store(query, vector_store, k=5)
+    retrieved_docs = query_vector_store(query, vector_store, k=10)
     if not retrieved_docs:
         return "I could not find any high-yield facts related to your query in the provided materials."
 
