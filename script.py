@@ -320,6 +320,7 @@ def rag_pipeline(query: str, sender_id: str):
     """
     The new RAG pipeline.
     """
+    send_whatsapp_message(sender_id, "Thinking...")
     vector_store = current_app.config.get('VECTOR_STORE') or vector_store_rag
     if not vector_store:
         return "The educational database is currently unavailable. Please try again later."
@@ -329,12 +330,16 @@ def rag_pipeline(query: str, sender_id: str):
     if not retrieved_docs:
         return "I could not find any high-yield facts related to your query in the provided materials."
 
+    send_whatsapp_message(sender_id, "Relevant NBME questions found...")
+
     # 2. Generate a summary
     context_parts = []
     for doc in retrieved_docs:
         source_id = doc.metadata.get('Source_ID', 'Unknown')
         context_parts.append(f"Fact from {source_id}: {doc.page_content}")
     context_str = "\n\n".join(context_parts)
+
+    send_whatsapp_message(sender_id, "Summarizing and compiling a response...")
 
     system_prompt_content = (
         "You are a USMLE Step 2 tutor. Your goal is to help students understand high-yield concepts for their NBME and CMS forms. "
