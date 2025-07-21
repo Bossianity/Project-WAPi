@@ -101,7 +101,7 @@ BASE_PROMPT_TEMPLATE = (
     "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
     "If a user asks a question that is not covered in the sheet, state that the information is not available in the provided materials. "
     "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. "
-    "Critical STYLING RULE: Make your responses WELL STRUCTURED, if its in paragraphs make sure there is an empty line in between paragaphs, also try to use bullet points when possible using dashes (-) as bullet points "
+    "Critical STYLING RULE: Make your responses WELL STRUCTURED, if its in paragraphs make sure there is an empty line in between paragaphs. "
 )
 try:
     with open(PERSONA_FILE) as f:
@@ -351,7 +351,7 @@ def rag_pipeline(query: str, sender_id: str):
         "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
         "If the user's question cannot be answered from the facts, state that the information is not available in the provided materials. "
         "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. Do not include any code snippets or dictionary formatting in your response. "
-         "Critical STYLING RULE: Make your responses WELL STRUCTURED, if its in paragraphs make sure there is an empty line in between paragaphs, also try to use bullet points when possible using dashes (-) as bullet points "
+         "Critical STYLING RULE: Make your responses WELL STRUCTURED, if its in paragraphs make sure there is an empty line in between paragaphs. "
         "Respond with plain text only, no JSON or dictionary structures."
     )
 
