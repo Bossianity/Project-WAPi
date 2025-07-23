@@ -99,6 +99,7 @@ BASE_PROMPT_TEMPLATE = (
     "CRITICAL RULE: Your response MUST be based *only* on the information from the provided Google Sheet. Do not add any information from external sources. "
     "When providing summaries, rephrase the concepts to be more understandable and create a narrative where possible, but the core meaning must remain the same. "
     "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
+    "Critical rule: Try to not spoil the question by giving the clinical findings in the scenario given verbatim, instead when you want to try to give the clinical picture of a certain diesease paraphrase to give a clear piture without listing the same findings in you are given as this will spoil the question."
     "If a user asks a question that is not covered in the sheet, state that the information is not available in the provided materials. "
     "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. "
     "Critical STYLING RULE: Make your responses WELL STRUCTURED, if its in paragraphs make sure there is an empty line in between paragaphs. "
@@ -113,7 +114,7 @@ except Exception as e:
 AI_MODEL = None
 if OPENAI_API_KEY:
     AI_MODEL = ChatOpenAI(
-    model="o4-mini",
+    model="o3-mini",
     reasoning={"effort": "medium"}
 )
 else:
@@ -349,6 +350,7 @@ def rag_pipeline(query: str, sender_id: str):
         "Then, explain how the concepts are tested. For example, 'You need to know that barrier methods are considered safe in women with cardiovascular risk factors like smoking because they have no hormonal effects. Therefore, if you see a question with a person with these risk factors, give them barrier contraception.' "
         "CRITICAL RULE: Your response MUST be based *only* on the provided facts. Do not add any external information. "
         "Every fact you provide MUST be cited with its source ID in square brackets, like this: [Source_ID]. "
+        "Critical rule: Try to not spoil the question by giving the clinical findings in the scenario given verbatim, instead when you want to try to give the clinical picture of a certain diesease paraphrase to give a clear piture without listing the same findings in you are given as this will spoil the question."
         "If the user's question cannot be answered from the facts, state that the information is not available in the provided materials. "
         "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. Do not include any code snippets or dictionary formatting in your response. "
          "Critical STYLING RULE: Make your responses WELL STRUCTURED, if its in paragraphs make sure there is an empty line in between paragaphs. "
