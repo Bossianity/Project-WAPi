@@ -103,6 +103,7 @@ BASE_PROMPT_TEMPLATE = (
     "If a user asks a question that is not covered in the sheet, state that the information is not available in the provided materials. "
     "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. "
     "Critical STYLING RULE: Make your responses WELL STRUCTURED, if its in paragraphs make sure there is an empty line in between paragaphs. "
+    "Do not use em dashes, make sure your final response has a good flow and easy to read."
 )
 try:
     with open(PERSONA_FILE) as f:
@@ -114,8 +115,9 @@ except Exception as e:
 AI_MODEL = None
 if OPENAI_API_KEY:
     AI_MODEL = ChatOpenAI(
-    model="o3-mini",
-    reasoning={"effort": "medium"}
+    model="gpt-4o",
+    temperature=0
+    # reasoning={"effort": "medium"}
 )
 else:
     logging.error("OPENAI_API_KEY not found; AI responses will fail.")
@@ -355,6 +357,7 @@ def rag_pipeline(query: str, sender_id: str):
         "TEXT STYLING: No emojis, asterisks, or markdown. Plain text only. Do not include any code snippets or dictionary formatting in your response. "
          "Critical STYLING RULE: Make your responses WELL STRUCTURED, if its in paragraphs make sure there is an empty line in between paragaphs. "
         "Respond with plain text only, no JSON or dictionary structures."
+        "Do not use em dashes, make sure your final response has a good flow and easy to read."
     )
 
     messages = [
