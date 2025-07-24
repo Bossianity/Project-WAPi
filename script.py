@@ -115,9 +115,8 @@ except Exception as e:
 AI_MODEL = None
 if OPENAI_API_KEY:
     AI_MODEL = ChatOpenAI(
-    model="gpt-4o",
-    temperature=0
-    # reasoning={"effort": "medium"}
+    model="o3-mini",
+    reasoning={"effort": "high"}
 )
 else:
     logging.error("OPENAI_API_KEY not found; AI responses will fail.")
