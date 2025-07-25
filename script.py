@@ -416,6 +416,7 @@ def rag_pipeline(query: str, sender_id: str):
     except Exception as e:
         logging.error(f"Error during RAG pipeline summary generation: {e}", exc_info=True)
         return "I am having trouble processing your request."
+        
 def is_medical_query(text: str, language='en') -> bool:
     """
     Uses the LLM to determine if a user's query is medical or NBME-related.
@@ -448,7 +449,25 @@ def is_medical_query(text: str, language='en') -> bool:
     try:
         messages = [HumanMessage(content=prompt)]
         response = AI_MODEL.invoke(messages)
-        result = response.content.strip().lower()
+        
+        # Handle different response formats
+        result = ""
+        if hasattr(response, 'content'):
+            if isinstance(response.content, str):
+                result = response.content.strip().lower()
+            elif isinstance(response.content, list):
+                # Handle list of content blocks
+                text_parts = []
+                for item in response.content:
+                    if isinstance(item, dict):
+                        text_parts.append(item.get('text', str(item)))
+                    else:
+                        text_parts.append(str(item))
+                result = " ".join(text_parts).strip().lower()
+            else:
+                result = str(response.content).strip().lower()
+        else:
+            result = str(response).strip().lower()
 
         logging.info(f"LLM classification for '{text}': '{result}'")
         return result == 'true'
