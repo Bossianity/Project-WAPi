@@ -752,7 +752,7 @@ def handle_new_messages():
                     if i < len(chunks) - 1:
                         time.sleep(1)
                 
-                return jsonify(status='success_handled'), 200)
+                return jsonify(status='success_handled'), 200
 
     except Exception as e:
          logging.error(f"Error in fallback LLM handling: {e}", exc_info=True)
