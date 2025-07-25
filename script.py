@@ -731,31 +731,29 @@ def handle_new_messages():
                  body_text = reply_content.get('buttons_reply', {}).get('title') or reply_content.get('list_reply', {}).get('title')
 
 
+           # Replace the existing fallback LLM handling section with this:
             if body_text and sender not in interactive_flow_states and sender not in paused_conversations and not is_globally_paused:
-                # Determine the language of the message for more accurate classification
                 current_language = user_languages.get(sender, 'en')
-
-                # Check if the query is medical
-                if is_medical_query(body_text, language=current_language):
-                    # This is where the fixed functions will be called for medical queries
-                    response_dict = get_llm_response(body_text, sender)
-                    response_text = response_dict.get('content', "Sorry, I couldn't process that.")
-
-                    # Send the response
-                    chunks = split_message(response_text)
-                    for i, chunk in enumerate(chunks):
-                        send_whatsapp_message(sender, chunk)
-                        if i < len(chunks) - 1:
-                            time.sleep(1) # Small delay between messages
+                
+                # First, let 4o-mini handle the query
+                is_medical, chat_response = is_medical_query_and_respond(body_text, sender, language=current_language)
+                
+                if is_medical:
+                    # Medical query: use o3-mini via the existing rag_pipeline (which uses AI_MODEL)
+                    response_text = rag_pipeline(body_text, sender)
                 else:
-                    # Respond with a generic greeting for non-medical queries
-                    if current_language == 'ar':
-                        response_text = "مرحباً! كيف يمكنني مساعدتك في دراسة USMLE اليوم؟"
-                    else:
-                        response_text = "Hello! How can I help you with your USMLE studies today?"
-                    send_whatsapp_message(sender, response_text)
+                    # Non-medical query: use 4o-mini's response
+                    response_text = chat_response or "I'm here to help with your questions!"
+                
+                # Send the response
+                chunks = split_message(response_text)
+                for i, chunk in enumerate(chunks):
+                    send_whatsapp_message(sender, chunk)
+                    if i < len(chunks) - 1:
+                        time.sleep(1)
+                
+                return jsonify(status='success_handled'), 200)
 
-                return jsonify(status='success_llm_sent'), 200
     except Exception as e:
          logging.error(f"Error in fallback LLM handling: {e}", exc_info=True)
     
