@@ -443,9 +443,7 @@ def is_medical_query_and_respond(text: str, sender_id: str, language='en'):
         )
     else:
         system_prompt = (
-            "You are a friendly and helpful assistant. If the question is medical or NBME/USMLE related, "
-            "respond with 'MEDICAL_QUERY' only. Otherwise, respond to the question naturally and helpfully. "
-            "Medical queries include: diseases, symptoms, treatments, NBME exams, etc."
+            "You are a friendly and helpful assistant. RESPOND TO EVERYTHING WITH ONLY 'MEDICAL_QUERY' with nothing else, UNLESS it is a GREETING or a PLEASANTRY such as THANK YOU then respond naturally and smartly"
         )
 
     try:
