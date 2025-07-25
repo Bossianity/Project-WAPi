@@ -416,12 +416,64 @@ def rag_pipeline(query: str, sender_id: str):
     except Exception as e:
         logging.error(f"Error during RAG pipeline summary generation: {e}", exc_info=True)
         return "I am having trouble processing your request."
+def is_medical_query(text: str, language='en') -> bool:
+    """
+    Uses the LLM to determine if a user's query is medical or NBME-related.
+    """
+    if not AI_MODEL:
+        logging.error("AI_MODEL not configured. Cannot classify query.")
+        # Fallback to a simple keyword check if the LLM is not available
+        medical_keywords = ['medical', 'nbme', 'usmle', 'doctor', 'disease', 'symptoms', 'treatment', 'zika']
+        return any(keyword in text.lower() for keyword in medical_keywords)
+
+    if language == 'ar':
+        prompt_template = (
+            "الرجاء تحليل النص التالي وتحديد ما إذا كان استعلامًا طبيًا أو متعلقًا بـ NBME. النص هو: \"{text}\". "
+            "أمثلة على الاستعلامات الطبية: 'ما هو فيروس زيكا؟'، 'ما هي أعراض النوبة القلبية؟'، 'ارتفاع ضغط الدم'. "
+            "أمثلة على الاستعلامات غير الطبية: 'مرحباً'، 'شكراً لك'، 'هل أنت تعمل؟'. "
+            "قم بالرد بـ 'True' إذا كان استعلامًا طبيًا، و'False' إذا لم يكن كذلك. "
+            "قم بالرد فقط بـ 'True' أو 'False'."
+        )
+    else:
+        prompt_template = (
+            "Please analyze the following text and determine if it is a medical or NBME-related query. The text is: \"{text}\". "
+            "Examples of medical queries: 'What is Zika virus?', 'symptoms of a heart attack', 'hypertension'. "
+            "Examples of non-medical queries: 'hi', 'thank you', 'are you working?'. "
+            "Respond with 'True' if it is a medical query, and 'False' otherwise. "
+            "Respond only with 'True' or 'False'."
+        )
+
+    prompt = prompt_template.format(text=text)
+
+    try:
+        messages = [HumanMessage(content=prompt)]
+        response = AI_MODEL.invoke(messages)
+        result = response.content.strip().lower()
+
+        logging.info(f"LLM classification for '{text}': '{result}'")
+        return result == 'true'
+    except Exception as e:
+        logging.error(f"Error getting query classification from LLM: {e}", exc_info=True)
+        # Fallback to keyword check on error
+        medical_keywords = ['medical', 'nbme', 'usmle', 'doctor', 'disease', 'symptoms', 'treatment', 'zika']
+        return any(keyword in text.lower() for keyword in medical_keywords)
+
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
     if not AI_MODEL:
         return {'type': 'text', 'content': "AI Model not configured."}
 
-    # All educational queries will now go through the RAG pipeline
-    response_text = rag_pipeline(text, sender_id)
+    current_language = user_languages.get(sender_id, 'en')
+
+    if is_medical_query(text, language=current_language):
+        # All educational queries will now go through the RAG pipeline
+        response_text = rag_pipeline(text, sender_id)
+    else:
+        # Generate a direct response for non-medical queries
+        if current_language == 'ar':
+            response_text = "مرحباً! كيف يمكنني مساعدتك في دراسة USMLE اليوم؟"
+        else:
+            response_text = "Hello! How can I help you with your USMLE studies today?"
+
     return {'type': 'text', 'content': response_text}
 
 def split_message(text, max_lines=25, max_chars_per_msg=1500): # WhatsApp limits are higher
@@ -654,16 +706,29 @@ def handle_new_messages():
 
 
             if body_text and sender not in interactive_flow_states and sender not in paused_conversations and not is_globally_paused:
-                # This is where the fixed functions will be called
-                response_dict = get_llm_response(body_text, sender)
-                response_text = response_dict.get('content', "Sorry, I couldn't process that.")
+                # Determine the language of the message for more accurate classification
+                current_language = user_languages.get(sender, 'en')
 
-                # Send the response
-                chunks = split_message(response_text)
-                for i, chunk in enumerate(chunks):
-                    send_whatsapp_message(sender, chunk)
-                    if i < len(chunks) - 1:
-                        time.sleep(1) # Small delay between messages
+                # Check if the query is medical
+                if is_medical_query(body_text, language=current_language):
+                    # This is where the fixed functions will be called for medical queries
+                    response_dict = get_llm_response(body_text, sender)
+                    response_text = response_dict.get('content', "Sorry, I couldn't process that.")
+
+                    # Send the response
+                    chunks = split_message(response_text)
+                    for i, chunk in enumerate(chunks):
+                        send_whatsapp_message(sender, chunk)
+                        if i < len(chunks) - 1:
+                            time.sleep(1) # Small delay between messages
+                else:
+                    # Respond with a generic greeting for non-medical queries
+                    if current_language == 'ar':
+                        response_text = "مرحباً! كيف يمكنني مساعدتك في دراسة USMLE اليوم؟"
+                    else:
+                        response_text = "Hello! How can I help you with your USMLE studies today?"
+                    send_whatsapp_message(sender, response_text)
+
                 return jsonify(status='success_llm_sent'), 200
     except Exception as e:
          logging.error(f"Error in fallback LLM handling: {e}", exc_info=True)
