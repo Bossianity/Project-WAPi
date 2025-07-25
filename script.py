@@ -118,6 +118,15 @@ if OPENAI_API_KEY:
     model="o3-mini",
     reasoning={"effort": "high"}
 )
+
+# Add the new CHAT_MODEL (4o-mini) for non-medical queries:
+CHAT_MODEL = None
+if OPENAI_API_KEY:
+    CHAT_MODEL = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.7
+    )
+    
 else:
     logging.error("OPENAI_API_KEY not found; AI responses will fail.")
 
@@ -417,66 +426,64 @@ def rag_pipeline(query: str, sender_id: str):
         logging.error(f"Error during RAG pipeline summary generation: {e}", exc_info=True)
         return "I am having trouble processing your request."
         
-def is_medical_query(text: str, language='en') -> bool:
+def is_medical_query_and_respond(text: str, sender_id: str, language='en'):
     """
-    Uses the LLM to determine if a user's query is medical or NBME-related.
+    Uses ChatGPT 4o-mini to respond to non-medical queries and identify medical ones.
+    Returns: (is_medical: bool, response_text: str or None)
     """
-    if not AI_MODEL:
-        logging.error("AI_MODEL not configured. Cannot classify query.")
-        # Fallback to a simple keyword check if the LLM is not available
-        medical_keywords = ['medical', 'nbme', 'usmle', 'doctor', 'disease', 'symptoms', 'treatment', 'zika']
-        return any(keyword in text.lower() for keyword in medical_keywords)
+    if not CHAT_MODEL:
+        logging.error("CHAT_MODEL not configured. Cannot classify query.")
+        return True, None  # Default to medical if chat model unavailable
 
     if language == 'ar':
-        prompt_template = (
-            "الرجاء تحليل النص التالي وتحديد ما إذا كان استعلامًا طبيًا أو متعلقًا بـ NBME. النص هو: \"{text}\". "
-            "أمثلة على الاستعلامات الطبية: 'ما هو فيروس زيكا؟'، 'ما هي أعراض النوبة القلبية؟'، 'ارتفاع ضغط الدم'. "
-            "أمثلة على الاستعلامات غير الطبية: 'مرحباً'، 'شكراً لك'، 'هل أنت تعمل؟'. "
-            "قم بالرد بـ 'True' إذا كان استعلامًا طبيًا، و'False' إذا لم يكن كذلك. "
-            "قم بالرد فقط بـ 'True' أو 'False'."
+        system_prompt = (
+            "أنت مساعد ودود ومفيد. إذا كان السؤال طبياً أو متعلقاً بـ NBME/USMLE، "
+            "قم بالرد بـ 'MEDICAL_QUERY' فقط. وإلا، قم بالرد على السؤال بشكل طبيعي ومفيد. "
+            "الأسئلة الطبية تشمل: الأمراض، الأعراض، العلاجات، امتحانات NBME، إلخ."
         )
     else:
-        prompt_template = (
-            "Please analyze the following text and determine if it is a medical or NBME-related query. The text is: \"{text}\". "
-            "Examples of medical queries: 'What is Zika virus?', 'symptoms of a heart attack', 'hypertension'. "
-            "Examples of non-medical queries: 'hi', 'thank you', 'are you working?'. "
-            "Respond with 'True' if it is a medical query, and 'False' otherwise. "
-            "Respond only with 'True' or 'False'."
+        system_prompt = (
+            "You are a friendly and helpful assistant. If the question is medical or NBME/USMLE related, "
+            "respond with 'MEDICAL_QUERY' only. Otherwise, respond to the question naturally and helpfully. "
+            "Medical queries include: diseases, symptoms, treatments, NBME exams, etc."
         )
 
-    prompt = prompt_template.format(text=text)
-
     try:
-        messages = [HumanMessage(content=prompt)]
-        response = AI_MODEL.invoke(messages)
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=text)
+        ]
+        response = CHAT_MODEL.invoke(messages)
         
         # Handle different response formats
         result = ""
         if hasattr(response, 'content'):
             if isinstance(response.content, str):
-                result = response.content.strip().lower()
+                result = response.content.strip()
             elif isinstance(response.content, list):
-                # Handle list of content blocks
                 text_parts = []
                 for item in response.content:
                     if isinstance(item, dict):
                         text_parts.append(item.get('text', str(item)))
                     else:
                         text_parts.append(str(item))
-                result = " ".join(text_parts).strip().lower()
+                result = " ".join(text_parts).strip()
             else:
-                result = str(response.content).strip().lower()
+                result = str(response.content).strip()
         else:
-            result = str(response).strip().lower()
+            result = str(response).strip()
 
-        logging.info(f"LLM classification for '{text}': '{result}'")
-        return result == 'true'
+        if result == 'MEDICAL_QUERY':
+            logging.info(f"Chat model identified medical query: '{text}'")
+            return True, None
+        else:
+            logging.info(f"Chat model responded to non-medical query: '{text}'")
+            return False, result
+
     except Exception as e:
-        logging.error(f"Error getting query classification from LLM: {e}", exc_info=True)
-        # Fallback to keyword check on error
-        medical_keywords = ['medical', 'nbme', 'usmle', 'doctor', 'disease', 'symptoms', 'treatment', 'zika']
-        return any(keyword in text.lower() for keyword in medical_keywords)
-
+        logging.error(f"Error in chat model classification: {e}", exc_info=True)
+        return True, None
+        
 def get_llm_response(text, sender_id, history_dicts=None, retries=3):
     if not AI_MODEL:
         return {'type': 'text', 'content': "AI Model not configured."}
