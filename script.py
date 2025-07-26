@@ -37,7 +37,11 @@ from google_drive_handler import (
     get_google_sheet_content
 )
 
-
+from whatsapp_utils import (
+    send_whatsapp_message,
+    send_whatsapp_image_message,
+    set_webhook
+)
 
 COMPANY_DATA_FOLDER = 'company_data'
 sell_flow_states = {}
